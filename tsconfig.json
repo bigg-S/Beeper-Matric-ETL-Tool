@@ -1,0 +1,69 @@
+{
+    "compilerOptions": {
+      // Target latest version of ECMAScript
+        "target": "ES2022",
+        "lib": ["DOM", "DOM.Iterable", "ESNext"],
+        "module": "ESNext",
+
+        // Module resolution
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+
+        // Strict Type-Checking
+        "strict": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "strictPropertyInitialization": true,
+        "noImplicitThis": true,
+        "useUnknownInCatchVariables": true,
+        "alwaysStrict": true,
+
+        // Additional Checks
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
+
+        // Module Features
+        "allowSyntheticDefaultImports": true,
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+
+        // JSX
+        "jsx": "preserve",
+
+        // Emit
+        "noEmit": true,
+        "incremental": true,
+
+      // Path aliases
+        "baseUrl": ".",
+        "paths": {
+            "@/*": ["src/*"],
+            "@components/*": ["src/web/components/*"],
+            "@server/*": ["src/server/*"],
+            "@lib/*": ["src/lib/*"],
+            "@types/*": ["src/types/*"]
+    },
+
+      // Skip type checking of node_modules
+        "skipLibCheck": true
+    },
+    "include": [
+        "next-env.d.ts",
+        "**/*.ts",
+        "**/*.tsx"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        ".next",
+        "coverage"
+    ]
+}
