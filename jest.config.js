@@ -14,4 +14,4 @@ module.exports = {
         '!src/**/*.stories.{ts,tsx}',
         '!src/**/*.test.{ts,tsx}',
     ],
-  }
+}
