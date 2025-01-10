@@ -16,7 +16,7 @@ router.post('/auth/login', async (req, res) => {
         syncManager = new SyncManager(matrixClient.getClient());
         await syncManager.startSync();
         res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
 });
@@ -41,7 +41,7 @@ router.get('/stats', async (req, res) => {
         totalMessages: messageCount.data?.[0]?.count || 0,
         lastSync: lastSync.data?.[0]?.last_sync,
         });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
 });
@@ -50,7 +50,7 @@ router.post('/crypto/export', async (req, res) => {
     try {
         const keys = await cryptoManager.exportE2EKeys();
         res.json({ keys });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
 });
@@ -59,7 +59,7 @@ router.post('/crypto/import', async (req, res) => {
     try {
         await cryptoManager.importE2EKeys(req.body.keys);
         res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
         res.status(500).json({ error: error.message });
     }
 });

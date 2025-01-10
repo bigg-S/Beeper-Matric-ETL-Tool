@@ -1,4 +1,4 @@
-import * as sdk from 'matrix-js-sdk';
+import * as MatrixSDK from 'matrix-js-sdk';
 import { MatrixCryptoApi } from '@matrix-org/matrix-sdk-crypto-nodejs';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -18,7 +18,7 @@ private ensureStorePathExists() {
     }
 }
 
-async initCrypto(client: sdk.MatrixClient): Promise<void> {
+async initCrypto(client: MatrixSDK.MatrixClient): Promise<void> {
     try {
         this.crypto = new MatrixCryptoApi({
             userId: client.getUserId(),
@@ -47,7 +47,7 @@ async initCrypto(client: sdk.MatrixClient): Promise<void> {
         // Enable encryption for new rooms by default
         client.setGlobalErrorOnUnknownDevices(false);
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Failed to initialize crypto:', error);
         throw new Error(`Crypto initialization failed: ${error.message}`);
     }
@@ -62,7 +62,7 @@ async encryptEvent(roomId: string, eventType: string, content: any): Promise<any
     }
 }
 
-async decryptEvent(event: sdk.MatrixEvent): Promise<any> {
+async decryptEvent(event: MatrixSDK.MatrixEvent): Promise<any> {
     try {
         return await this.crypto.decryptRoomEvent(event);
     } catch (error) {
@@ -92,6 +92,6 @@ async importE2EKeys(keys: string): Promise<void> {
 
 export const cryptoManager = new CryptoManager();
 
-export const initCrypto = async (client: sdk.MatrixClient): Promise<void> => {
+export const initCrypto = async (client: MatrixSDK.MatrixClient): Promise<void> => {
     await cryptoManager.initCrypto(client);
 };

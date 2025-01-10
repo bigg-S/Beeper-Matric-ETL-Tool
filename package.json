@@ -45,6 +45,8 @@
   },
   "homepage": "https://github.com/bigg-S/Beeper-Matric-ETL-Tool#readme",
   "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.4",
@@ -74,6 +76,7 @@
     "@matrix-org/matrix-sdk-crypto-nodejs": "^0.3.0-beta.1",
     "@nextui-org/react": "^2.6.11",
     "@supabase/supabase-js": "^2.47.12",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "matrix-js-sdk": "^35.1.0",

@@ -1,16 +1,16 @@
-import * as sdk from 'matrix-js-sdk';
+import * as MatrixSDK from 'matrix-js-sdk';
 import { supabase } from '../db/client';
 import { SyncStatus } from '../../types';
 import { cryptoManager } from './crypto';
 
 export class SyncManager {
-private client: sdk.MatrixClient;
+private client: MatrixSDK.MatrixClient;
 private syncState: SyncStatus = {
     state: 'initializing',
     progress: 0,
 };
 
-constructor(client: sdk.MatrixClient) {
+constructor(client: MatrixSDK.MatrixClient) {
     this.client = client;
 }
 
@@ -18,7 +18,7 @@ async startSync() {
     try {
         this.setupSyncListeners();
         await this.client.startClient({ initialSyncLimit: 30 });
-    } catch (error) {
+    } catch (error: any) {
         await this.updateSyncStatus('error', error.message);
         throw error;
     }
@@ -29,11 +29,11 @@ private setupSyncListeners() {
         await this.handleSyncStateChange(state, data);
     });
 
-    this.client.on('Room.timeline', async (event: sdk.MatrixEvent, room: sdk.Room) => {
+    this.client.on('Room.timeline', async (event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) => {
         await this.handleTimelineEvent(event, room);
     });
 
-    this.client.on('Room.receipt', async (event: sdk.MatrixEvent, room: sdk.Room) => {
+    this.client.on('Room.receipt', async (event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) => {
         await this.handleReceiptEvent(event, room);
     });
 }
@@ -56,7 +56,7 @@ private async handleSyncStateChange(state: string, data?: any) {
     await this.updateSyncStatus(state.toLowerCase(), undefined, progress);
 }
 
-private async handleTimelineEvent(event: sdk.MatrixEvent, room: sdk.Room) {
+private async handleTimelineEvent(event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) {
     try {
         if (event.isEncrypted()) {
         const decryptedEvent = await cryptoManager.decryptEvent(event);
@@ -66,22 +66,22 @@ private async handleTimelineEvent(event: sdk.MatrixEvent, room: sdk.Room) {
         if (event.getType() === 'm.room.message') {
         await this.storeMessage(event, room);
     }
-    } catch (error) {
+    } catch (error: any) {
         console.error(`Failed to process timeline event: ${error.message}`);
     }
 }
 
-private async handleReceiptEvent(event: sdk.MatrixEvent, room: sdk.Room) {
+private async handleReceiptEvent(event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) {
     /// read  receipt
 }
 
-private async storeMessage(event: sdk.MatrixEvent, room: sdk.Room) {
+private async storeMessage(event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) {
     const messageData = {
         id: event.getId(),
         room_id: room.roomId,
         sender: event.getSender(),
         content: event.getContent().body,
-        timestamp: event.getDate().toISOString(),
+        timestamp: event.getDate()?.toISOString(),
         encrypted: event.isEncrypted(),
         event_type: event.getType(),
     };
