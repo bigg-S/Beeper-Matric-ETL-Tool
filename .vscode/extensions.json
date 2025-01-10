@@ -4,7 +4,6 @@
         "dbaeumer.vscode-eslint",
         "editorconfig.editorconfig",
         "esbenp.prettier-vscode",
-        "streetsidesoftware.code-spell-checker",
         "tlent.jest-snapshot-language-support",
         "mrmlnc.vscode-json5"
     ],
