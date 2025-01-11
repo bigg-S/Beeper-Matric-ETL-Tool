@@ -5,6 +5,7 @@ import { cryptoManager } from './crypto';
 import { supabase } from '../db/client';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
+import { RoomId } from '@matrix-org/matrix-sdk-crypto-nodejs';
 
 dotenv.config();
 
@@ -172,14 +173,14 @@ export class MatrixClient extends EventEmitter {
         await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
     }
 
-    private async processEvent(event: MatrixEvent) {
+    private async processEvent(event: MatrixEvent, roomId: RoomId) {
         if (event.getType() !== 'm.room.message') return;
 
         try {
             let content = event.getContent();
 
             if (event.isEncrypted()) {
-                const decryptedEvent = await cryptoManager.decryptEvent(event);
+                const decryptedEvent = await cryptoManager.decryptEvent(event, roomId);
                 content = decryptedEvent.getContent();
             }
 

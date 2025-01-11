@@ -221,7 +221,7 @@ router.get('/crypto/status', authenticateRequest, async (_req, res) => {
 
 router.post('/crypto/backup', authenticateRequest, async (_req, res) => {
     try {
-        await cryptoManager.backupKeys();
+        await cryptoManager.createBackup();
         res.json({ success: true });
     } catch (error: any) {
         handleError(res, error);
