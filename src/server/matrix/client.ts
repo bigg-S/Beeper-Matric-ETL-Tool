@@ -4,6 +4,9 @@ import { MatrixConfig } from '../../types';
 import { cryptoManager } from './crypto';
 import { supabase } from '../db/client';
 import { EventEmitter } from 'events';
+import * as dotenv from 'dotenv';
+
+dotenv.config();
 
 export class MatrixClient extends EventEmitter {
     private client: MatrixSDK.MatrixClient;
@@ -14,7 +17,9 @@ export class MatrixClient extends EventEmitter {
         super();
         this.config = config;
         this.client = MatrixSDK.createClient({
+            pickleKey: process.env.PICKLE_KEY,
             baseUrl: `https://${config.domain}`,
+            accessToken: process.env.MATRIX_ACCESS_TOKEN,
             userId: `@${config.username}:${config.domain}`,
         });
     }
@@ -44,6 +49,40 @@ export class MatrixClient extends EventEmitter {
         }
     }
 
+    public async logout() {
+        try {
+            await this.client.logout();
+
+            this.syncToken = null;
+
+            const userId = this.client.getUserId();
+            if (userId) {
+                await supabase.from('device_credentials').delete().eq('user_id', userId);
+            }
+
+            this.client.stopClient();
+
+            console.log('Successfully logged out');
+        } catch (error: any) {
+            console.error(`Failed to logout: ${error.message}`);
+            throw new Error(`Logout failed: ${error.message}`);
+        }
+    }
+
+    public async getUserProfile(userId: string) {
+        try {
+            const displayName = await this.client.getProfileInfo(userId, 'displayname');
+            const avatarUrl = await this.client.getProfileInfo(userId, 'avatar_url');
+            return {
+                displayName: displayName?.displayname || null,
+                avatarUrl: avatarUrl?.avatar_url || null,
+            };
+        } catch (error: any) {
+            console.error(`Failed to fetch user profile for ${userId}:`, error);
+            throw new Error(`Unable to fetch user profile: ${error.message}`);
+        }
+    }
+
     private async setupCrypto() {
         await cryptoManager.initCrypto(this.client);
 
@@ -51,11 +90,11 @@ export class MatrixClient extends EventEmitter {
         if (cryptoApi) {
             const keyBackupInfo = await cryptoApi.getKeyBackupInfo();
             if (!keyBackupInfo) {
-                await this.client.enableKeyBackup();
+                await cryptoApi.checkKeyBackupAndEnable();
             }
         }
 
-        this.client.on(MatrixSDK.ClientEvent.DeviceVerificationChanged, async (userId: string, deviceId: string) => {
+        this.client.on(MatrixSDK., async (userId: string, deviceId: string) => {
             await this.handleDeviceVerification(userId, deviceId);
         });
 
@@ -117,17 +156,20 @@ export class MatrixClient extends EventEmitter {
     }
 
     private async processRoom(room: Room) {
+        const timeline = room.getLiveTimeline();
+        const state = timeline.getState(MatrixSDK.EventTimeline.FORWARDS);
+
         const roomData = {
             id: room.roomId,
             name: room.name,
-            topic: room.currentState.getStateEvents('m.room.topic')?.[0]?.getContent().topic,
-            encrypted: room.currentState.getStateEvents('m.room.encryption').length > 0,
+            topic: state?.getStateEvents('m.room.topic')?.[0]?.getContent().topic,
+            encrypted: state!.getStateEvents('m.room.encryption')?.length > 0,
             members: Array.from(room.getJoinedMembers().map((m) => m.userId)),
             created_at: new Date().toISOString(),
             last_updated: new Date().toISOString(),
         };
 
-        await supabase.from('rooms').insert(roomData, { onConflict: 'id' });
+        await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
     }
 
     private async processEvent(event: MatrixEvent) {
@@ -154,7 +196,7 @@ export class MatrixClient extends EventEmitter {
                 created_at: new Date().toISOString(),
             };
 
-            await supabase.from('messages').insert(messageData, { onConflict: 'id' });
+            await supabase.from('messages').upsert(messageData, { onConflict: 'id' });
         } catch (error: any) {
             console.error(`Failed to process event ${event.getId()}:`, error);
             await supabase.from('failed_events').insert({

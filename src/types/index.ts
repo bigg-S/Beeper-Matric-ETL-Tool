@@ -4,6 +4,12 @@ export interface MatrixConfig {
     domain: string;
 }
 
+export interface UserPayload {
+    username: string;
+    password: string;
+    domain: string;
+}
+
 export interface SyncStatus {
     state: 'initializing' | 'syncing' | 'synchronized' | 'error';
     progress?: number;
@@ -26,4 +32,12 @@ export interface Message {
     content: string;
     timestamp: Date;
     encrypted: boolean;
+}
+
+declare global {
+    namespace Express {
+        interface Request {
+            user?: UserPayload;
+        }
+    }
 }
