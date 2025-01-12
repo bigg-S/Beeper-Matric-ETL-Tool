@@ -1,32 +1,27 @@
 import * as MatrixSDK from 'matrix-js-sdk';
 import { OlmMachine, UserId, DeviceId, RoomId } from '@matrix-org/matrix-sdk-crypto-nodejs';
 import * as fs from 'fs';
-import { ISigned } from 'matrix-js-sdk/lib/@types/signed';
+import { CryptoStatus, EncryptedData, ISecretStorageKeyInfo, KeyExportOptionsCustom } from '@/types';
+import { DeviceVerificationStatus } from 'matrix-js-sdk/lib/crypto-api';
 
-interface CryptoStatus {
-    initialized: boolean;
-    backupStatus: {
-        enabled: boolean;
-        lastBackup: string | null;
-        version: string | null;
-        algorithm: string | null
-        auth_data: ISigned & (MatrixSDK.Crypto.Curve25519AuthData | MatrixSDK.Crypto.Aes256AuthData) | null
-    };
-    keysStatus: {
-        totalKeys: number;
-        backedUpKeys: number;
-    };
-}
 
-interface ISecretStorageKeyInfo {
-    passphrase?: {
-        algorithm: string;
-        salt: string;
-        iterations: number;
-    };
+class CryptoError extends Error {
+    constructor(message: string, public readonly code: string) {
+        super(message);
+        this.name = 'CryptoError';
+    }
 }
 
 export class CryptoManager {
+    private static readonly ENCRYPTION_VERSION = '1.0.0';
+    private static readonly MIN_PASSWORD_LENGTH = 8;
+    private static readonly DEFAULT_ITERATIONS = 310000; // OWASP
+    private static readonly SALT_LENGTH = 32;
+    private static readonly KEY_LENGTH = 32;
+    private static readonly IV_LENGTH = 12;
+    private static readonly TAG_LENGTH = 16;
+    private static readonly ALGORITHM = 'aes-256-gcm';
+
     private crypto: OlmMachine | null = null;
     private client: MatrixSDK.MatrixClient | null = null;
     private storePath: string;
@@ -47,7 +42,9 @@ export class CryptoManager {
             },
             keysStatus: {
                 totalKeys: 0,
-                backedUpKeys: 0
+                backedUpKeys: 0,
+                exportedAt: "",
+                lastImport: ""
             }
         };
     }
@@ -58,28 +55,50 @@ export class CryptoManager {
         }
     }
 
-    private async deriveKey(passphrase: string, salt: string, iterations: number): Promise<Uint8Array> {
-        const encoder = new TextEncoder();
-        const baseKey = await crypto.subtle.importKey(
-            'raw',
-            encoder.encode(passphrase),
-            'PBKDF2',
-            false,
-            ['deriveBits']
-        );
+    private async deriveKey(passphrase: string, salt: Uint8Array, iterations: number): Promise<{key: CryptoKey; rawKey: Uint8Array}> {
+        if (passphrase.length < CryptoManager.MIN_PASSWORD_LENGTH) {
+            throw new CryptoError(
+                `Password must be at least ${CryptoManager.MIN_PASSWORD_LENGTH} characters long`,
+                'INVALID_PASSWORD_LENGTH'
+            );
+        }
 
-        const derivedBits = await crypto.subtle.deriveBits(
-            {
-                name: 'PBKDF2',
-                salt: encoder.encode(salt),
-                iterations: iterations,
-                hash: 'SHA-512'
-            },
-            baseKey,
-            256
-        );
+        try {
+            const encoder = new TextEncoder();
+            const baseKey = await crypto.subtle.importKey(
+                'raw',
+                encoder.encode(passphrase),
+                'PBKDF2',
+                false,
+                ['deriveBits']
+            );
 
-        return new Uint8Array(derivedBits);
+            const derivedBits = await crypto.subtle.deriveBits(
+                {
+                    name: 'PBKDF2',
+                    salt,
+                    iterations,
+                    hash: 'SHA-512'
+                },
+                baseKey,
+                CryptoManager.KEY_LENGTH * 8
+            );
+
+            const key = await crypto.subtle.importKey(
+                'raw',
+                derivedBits,
+                'AES-GCM',
+                false,
+                ['encrypt', 'decrypt']
+            );
+
+            return { key, rawKey: new Uint8Array(derivedBits) };
+        } catch (error) {
+            throw new CryptoError(
+                `Failed to generate encryption key: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'KEY_GENERATION_FAILED'
+            );
+        }
     }
 
     private getSecretStorageKey = async ({
@@ -95,13 +114,15 @@ export class CryptoManager {
         const keyInfo = keyInfos[keyId];
         if (!keyInfo.passphrase) return null;
 
+        const salt = Uint8Array.from(keyInfo.passphrase.salt)
+
         const derivedKey = await this.deriveKey(
             this.backupKey.toString(),
-            keyInfo.passphrase.salt,
+            salt,
             keyInfo.passphrase.iterations
         );
 
-        return [keyId, derivedKey];
+        return [keyId, derivedKey.rawKey];
     };
 
     async initCrypto(client: MatrixSDK.MatrixClient, passphrase?: string): Promise<void> {
@@ -149,6 +170,273 @@ export class CryptoManager {
         } catch (error: any) {
             console.error('Failed to initialize crypto:', error);
             throw new Error(`Crypto initialization failed: ${error.message}`);
+        }
+    }
+
+    private async encryptData(data: string, key: CryptoKey): Promise<{ encryptedData: ArrayBuffer; iv: Uint8Array }> {
+        try {
+            const encoder = new TextEncoder();
+            const iv = crypto.getRandomValues(new Uint8Array(CryptoManager.IV_LENGTH));
+
+            const encryptedData = await crypto.subtle.encrypt(
+                {
+                    name: 'AES-GCM',
+                    iv,
+                    tagLength: CryptoManager.TAG_LENGTH * 8
+                },
+                key,
+                encoder.encode(data)
+            );
+
+            return { encryptedData, iv };
+        } catch (error) {
+            throw new CryptoError(
+                `Encryption failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'ENCRYPTION_FAILED'
+            );
+        }
+    }
+
+    private async decryptData(
+        encryptedData: ArrayBuffer,
+        key: CryptoKey,
+        iv: Uint8Array
+    ): Promise<string> {
+        try {
+            const decryptedData = await crypto.subtle.decrypt(
+                {
+                    name: 'AES-GCM',
+                    iv,
+                    tagLength: CryptoManager.TAG_LENGTH * 8
+                },
+                key,
+                encryptedData
+            );
+
+            return new TextDecoder().decode(decryptedData);
+        } catch (error) {
+            throw new CryptoError(
+                `Decryption failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'DECRYPTION_FAILED'
+            );
+        }
+    }
+
+    async exportKeys(options: KeyExportOptionsCustom): Promise<string | void> {
+        if (!this.client?.getCrypto()) {
+            throw new CryptoError('Crypto is not initialized', 'CRYPTO_NOT_INITIALIZED');
+        }
+
+        try {
+            const defaultOptions = {
+                roomKeys: true,
+                megolmKeys: true,
+                olmKeys: true,
+                format: 'json',
+                password: undefined,
+                iterations: CryptoManager.DEFAULT_ITERATIONS
+            };
+
+            const finalOptions = { ...defaultOptions, ...options };
+
+            // Export keys using Matrix SDK
+            const exported = await this.client.getCrypto()?.exportRoomKeys();
+
+            if (!exported || !Array.isArray(exported)) {
+                throw new CryptoError('Failed to export keys: Invalid export format', 'INVALID_EXPORT_FORMAT');
+            }
+
+            let result: string | EncryptedData;
+
+            if (finalOptions.password) {
+                // generate salt and encryption parameters
+                const salt = crypto.getRandomValues(new Uint8Array(CryptoManager.SALT_LENGTH));
+
+                // encryption key
+                const { key } = await this.deriveKey(
+                    finalOptions.password,
+                    salt,
+                    finalOptions.iterations
+                );
+
+                // Encrypt the data
+                const { encryptedData, iv } = await this.encryptData(JSON.stringify(exported), key);
+
+                // Format the encrypted data
+                result = {
+                    iv: Buffer.from(iv).toString('base64'),
+                    data: Buffer.from(encryptedData).toString('base64'),
+                    salt: Buffer.from(salt).toString('base64'),
+                    iterations: finalOptions.iterations,
+                    version: CryptoManager.ENCRYPTION_VERSION,
+                    algorithm: CryptoManager.ALGORITHM
+                };
+            } else {
+                result = JSON.stringify(exported);
+            }
+
+            if (finalOptions.format === 'file') {
+                const filename = `matrix-keys-${Date.now()}.txt`;
+                fs.writeFileSync(filename, typeof result === 'string' ? result : JSON.stringify(result));
+                this.status.keysStatus.exportedAt = new Date().toISOString();
+                return filename;
+            }
+
+            this.status.keysStatus.exportedAt = new Date().toISOString();
+            return typeof result === 'string' ? result : JSON.stringify(result);
+
+        } catch (error) {
+            if (error instanceof CryptoError) {
+                throw error;
+            }
+            throw new CryptoError(
+                `Failed to export keys: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'EXPORT_FAILED'
+            );
+        }
+    }
+
+    async importKeys(keyData: string, password?: string): Promise<void> {
+        if (!this.client?.getCrypto()) {
+            throw new CryptoError('Crypto is not initialized', 'CRYPTO_NOT_INITIALIZED');
+        }
+
+        try {
+            let parsedData: any;
+            try {
+                parsedData = JSON.parse(keyData);
+            } catch (error) {
+                throw new CryptoError('Invalid key data format', 'INVALID_KEY_DATA');
+            }
+
+            let decryptedKeys: any;
+
+            if (parsedData.version && parsedData.algorithm === CryptoManager.ALGORITHM) {
+                if (!password) {
+                    throw new CryptoError('Password required for encrypted keys', 'PASSWORD_REQUIRED');
+                }
+
+                if (!parsedData.iv || !parsedData.data || !parsedData.salt || !parsedData.iterations) {
+                    throw new CryptoError('Invalid encrypted data format', 'INVALID_ENCRYPTED_DATA');
+                }
+
+                // base64 data back to buffers
+                const iv = Buffer.from(parsedData.iv, 'base64');
+                const encryptedData = Buffer.from(parsedData.data, 'base64');
+                const salt = Buffer.from(parsedData.salt, 'base64');
+
+                const { key } = await this.deriveKey(
+                    password,
+                    new Uint8Array(salt),
+                    parsedData.iterations
+                );
+
+                const decryptedData = await this.decryptData(
+                    encryptedData.buffer,
+                    key,
+                    new Uint8Array(iv)
+                );
+
+                try {
+                    decryptedKeys = JSON.parse(decryptedData);
+                } catch (error) {
+                    throw new CryptoError('Failed to parse decrypted data', 'INVALID_DECRYPTED_DATA');
+                }
+            } else {
+                decryptedKeys = parsedData;
+            }
+
+            if (!Array.isArray(decryptedKeys)) {
+                throw new CryptoError('Invalid key data structure', 'INVALID_KEY_STRUCTURE');
+            }
+
+            await this.client.getCrypto()?.importRoomKeys(decryptedKeys);
+
+            this.status.keysStatus.lastImport = new Date().toISOString();
+            this.status.keysStatus.totalKeys = decryptedKeys.length;
+            this.status.keysStatus.backedUpKeys = decryptedKeys.length;
+
+        } catch (error) {
+            if (error instanceof CryptoError) {
+                throw error;
+            }
+            throw new CryptoError(
+                `Failed to import keys: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'IMPORT_FAILED'
+            );
+        }
+    }
+
+    async recoverKeys(passphrase?: string): Promise<void> {
+        if (!this.client?.getCrypto()) {
+            throw new CryptoError('Crypto is not initialized', 'CRYPTO_NOT_INITIALIZED');
+        }
+
+        try {
+            // check existing backup
+            const backup = await this.client.getCrypto()?.checkKeyBackupAndEnable();
+
+            if (!backup?.backupInfo) {
+                throw new CryptoError('No backup found to recover', 'NO_BACKUP_FOUND');
+            }
+
+            // backup recovery based on authentication data presence
+            if (backup.backupInfo.auth_data?.private_key_salt &&
+                backup.backupInfo.auth_data?.private_key_iterations) {
+
+                if (!passphrase) {
+                    throw new CryptoError('Passphrase required for encrypted backup', 'PASSPHRASE_REQUIRED');
+                }
+
+                // restore using password-based method
+                await this.client.getCrypto()?.restoreKeyBackupWithPassphrase(passphrase);
+            } else {
+                // Enable backup and attempt recovery using secret storage
+                try {
+                    await this.client.getCrypto()?.checkKeyBackupAndEnable();
+
+                    if (!backup.trustInfo.trusted) {
+                        await this.client.restoreKeyBackupWithSecretStorage(
+                            backup.backupInfo,
+                            undefined,
+                            undefined
+                        );
+                    }
+                } catch (error) {
+                    throw new CryptoError(
+                        `Failed to restore from secret storage: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                        'SECRET_STORAGE_RESTORE_FAILED'
+                    );
+                }
+            }
+
+            // update backup status after recovery
+            this.status.backupStatus = {
+                version: backup.backupInfo.version ?? null,
+                algorithm: backup.backupInfo.algorithm ?? null,
+                auth_data: backup.backupInfo.auth_data,
+                enabled: true,
+                lastBackup: new Date().toISOString()
+            };
+
+            // const keyStatus = await this.client.getCrypto()?.getSessionBackupPrivateKey();
+            // if (keyStatus) {
+            //     const sessions = await this.client.getK;
+            //     if (sessions) {
+            //         this.status.keysStatus.totalKeys = sessions.total || 0;
+            //         this.status.keysStatus.backedUpKeys = sessions.backed_up || 0;
+            //     }
+            // }
+
+        } catch (error) {
+            console.error('Failed to recover keys:', error);
+            if (error instanceof CryptoError) {
+                throw error;
+            }
+            throw new CryptoError(
+                `Key recovery failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                'RECOVERY_FAILED'
+            );
         }
     }
 
@@ -274,6 +562,45 @@ export class CryptoManager {
 
     getStatus(): CryptoStatus {
         return this.status;
+    }
+
+    async getDetailedStatus(): Promise<CryptoStatus & {
+        deviceVerification: {
+            status: DeviceVerificationStatus | null
+        };
+        crossSigning: {
+            enabled: boolean;
+            trusted: boolean;
+        };
+    }> {
+        const basicStatus = this.getStatus();
+        const crypto = this.client?.getCrypto();
+
+        if (!crypto) {
+            return {
+                ...basicStatus,
+                deviceVerification: {
+                    status: null
+                },
+                crossSigning: {
+                    enabled: false,
+                    trusted: false,
+                },
+            };
+        }
+
+        const crossSigningStatus = await crypto.getCrossSigningStatus();
+
+        return {
+            ...basicStatus,
+            deviceVerification: {
+                status: await crypto.getDeviceVerificationStatus(this.client?.getUserId() ?? "", this.client?.deviceId ?? "")
+            },
+            crossSigning: {
+                enabled: crossSigningStatus.publicKeysOnDevice,
+                trusted: crossSigningStatus.privateKeysInSecretStorage,
+            },
+        };
     }
 }
 

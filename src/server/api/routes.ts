@@ -4,6 +4,7 @@ import { cryptoManager } from '../matrix/crypto';
 import { SyncManager } from '../matrix/sync';
 import { supabase } from '../db/client';
 import { z } from 'zod';
+import { KeyFormat } from "crypto";
 import { authenticateRequest } from '../middlware/auth';
 
 const router = Router();
@@ -188,10 +189,31 @@ router.get('/users/:userId', authenticateRequest, async (req, res) => {
 });
 
 // Crypto Routes
-router.post('/crypto/export', authenticateRequest, async (_req, res) => {
+
+const keyFormatSchema = z.enum();
+
+const formatOptions = z.union([
+    z.literal('json'),
+    z.literal('file'),
+    // other custom format
+]);
+
+export const exportKeysSchema = z.object({
+    roomKeys: z.boolean().optional(),
+    megolmKeys: z.boolean().optional(),
+    olmKeys: z.boolean().optional(),
+    format: formatOptions,
+    password: z.string().optional(),
+    iterations: z.number().positive().optional(),
+    type: keyFormatSchema
+}).strict();
+
+router.post('/crypto/export', authenticateRequest, async (req, res) => {
     try {
-        const keys = await cryptoManager.exportE2EKeys();
+        const keyExportOpts = exportKeysSchema.parse(req.body);
+        const keys = await cryptoManager.exportKeys(keyExportOpts);
         res.json({ keys });
+
     } catch (error: any) {
         handleError(res, error);
     }
@@ -203,7 +225,7 @@ router.post('/crypto/import', authenticateRequest, async (req, res) => {
             res.status(400).json({ error: 'Keys are required' });
             return;
         }
-        await cryptoManager.importE2EKeys(req.body.keys);
+        await cryptoManager.importKeys(req.body.keys);
         res.json({ success: true });
     } catch (error: any) {
         handleError(res, error);
@@ -219,18 +241,20 @@ router.get('/crypto/status', authenticateRequest, async (_req, res) => {
     }
 });
 
-router.post('/crypto/backup', authenticateRequest, async (_req, res) => {
+router.post('/crypto/backup', authenticateRequest, async (req, res) => {
     try {
-        await cryptoManager.createBackup();
+        const { passphrase } = req.params;
+        await cryptoManager.createBackup(passphrase ?? "");
         res.json({ success: true });
     } catch (error: any) {
         handleError(res, error);
     }
 });
 
-router.post('/crypto/restore', authenticateRequest, async (_req, res) => {
+router.post('/crypto/restore', authenticateRequest, async (req, res) => {
     try {
-        await cryptoManager.restoreKeys();
+        const { passphrase } = req.params;
+        await cryptoManager.recoverKeys(passphrase ?? "");
         res.json({ success: true });
     } catch (error: any) {
         handleError(res, error);
