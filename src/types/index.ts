@@ -122,7 +122,7 @@ export interface RoomData {
     name: string;
     topic?: string;
     is_encrypted: boolean;
-    created_ts: number;
+    created_ts: number | undefined;
     avatar_url?: string;
     last_updated: string;
 }
@@ -143,4 +143,15 @@ export interface SyncProgress {
     totalMessages: number;
     processedMessages: number;
     lastMessageTimestamp: string | null;
+    encryptedMessages: number,
+    decryptedMessages: number,
+    failedDecryptions: number
+}
+
+export interface SyncManagerOptions {
+    batchSize?: number;
+    initialSyncLimit?: number;
+    timeoutMs?: number;
+    retryDelayMs?: number;
+    maxRetries?: number;
 }

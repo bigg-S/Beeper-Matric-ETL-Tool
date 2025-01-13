@@ -1,34 +1,39 @@
 import * as MatrixSDK from 'matrix-js-sdk';
 import { supabase } from '../db/client';
-import { MessageQueue, ParticipantData, RoomData, SyncProgress, SyncStatus } from '../../types';
+import { ParticipantData, RoomData, SyncManagerOptions, SyncStatus } from '../../types';
 import { cryptoManager } from './crypto';
+import { MessageQueueImpl } from '@/types/message-queue';
 
 export class SyncManager {
     private client: MatrixSDK.MatrixClient;
     private syncState: SyncStatus = {
         state: 'initializing',
-        progress: 0,
         lastSync: undefined,
         error: undefined
     };
-    private messageQueue: MessageQueue;
-    private syncProgress: SyncProgress = {
-        totalRooms: 0,
-        processedRooms: 0,
-        totalMessages: 0,
-        processedMessages: 0,
-        lastMessageTimestamp: null
-    };
-    private readonly BATCH_SIZE = 50;
+    private messageQueue: MessageQueueImpl;
+    private readonly options: Required<SyncManagerOptions>;
     private processingQueue: boolean = false;
 
-    constructor(client: MatrixSDK.MatrixClient) {
+    constructor(
+        client: MatrixSDK.MatrixClient,
+        options: SyncManagerOptions = {}
+    ) {
         this.client = client;
-        this.messageQueue = new MessageQueue(this.BATCH_SIZE);
+        this.options = {
+            batchSize: options.batchSize || 50,
+            initialSyncLimit: options.initialSyncLimit || 30,
+            timeoutMs: options.timeoutMs || 30000,
+        };
+        this.messageQueue = new MessageQueueImpl(this.options.batchSize);
     }
 
-    async startSync(options: { fullSync?: boolean } = {}) {
+    async startSync(options: { fullSync?: boolean } = {}): Promise<void> {
         try {
+            if (!cryptoManager.getStatus().initialized) {
+                throw new Error('Crypto manager must be initialized before starting sync');
+            }
+
             const lastSync = await this.getLastSyncTimestamp();
 
             if (options.fullSync || !lastSync) {
@@ -38,41 +43,43 @@ export class SyncManager {
             }
 
             this.setupSyncListeners();
-            await this.client.startClient({ initialSyncLimit: 30 });
+            await this.client.startClient({
+                initialSyncLimit: this.options.initialSyncLimit,
+                includeArchivedRooms: true
+            });
+
             this.startMessageQueueProcessor();
         } catch (error: any) {
-            await this.updateSyncStatus('error', error.message);
+            await this.handleSyncError(error);
             throw error;
         }
     }
 
-    private async performFullSync() {
-        await this.updateSyncStatus('full_sync', undefined, 0.1);
+    private async performFullSync(): Promise<void> {
+        await this.updateSyncStatus('full_sync');
 
-        // First sync all rooms and participants
-        const rooms = this.client.getRooms();
-        this.syncProgress.totalRooms = rooms.length;
-
-        for (const room of rooms) {
-            await this.syncRoom(room);
-            await this.syncParticipants(room);
-            this.syncProgress.processedRooms++;
-            await this.updateSyncProgress();
+        try {
+            const rooms = this.client.getRooms();
+            for (const room of rooms) {
+                await this.syncRoom(room);
+                await this.syncParticipants(room);
+                await this.syncRoomMessages(room);
+            }
+        } catch (error: any) {
+            await this.handleSyncError(error);
+            throw error;
         }
-
-        // Then sync messages
-        await this.syncHistoricalMessages();
     }
 
     private async syncRoom(room: MatrixSDK.Room) {
         const roomData: RoomData = {
             id: room.roomId,
             name: room.name,
-            topic: room.currentState.getStateEvents('m.room.topic')[0]?.getContent().topic,
-            is_encrypted: room.currentState.isEncrypted(),
-            created_ts: room.getCreationTs(),
-            avatar_url: room.currentState.getStateEvents('m.room.avatar')[0]?.getContent().url,
-            last_updated: new Date().toISOString()
+            topic: room.getLiveTimeline()?.getState(MatrixSDK.EventTimeline.FORWARDS)?.getStateEvents('m.room.topic')[0]?.getContent()?.topic ?? "",
+            is_encrypted: !!room.getLiveTimeline().getState(MatrixSDK.EventTimeline.FORWARDS)?.getStateEvents(MatrixSDK.EventType.RoomEncryption, ""),
+            created_ts: room.getLiveTimeline().getState(MatrixSDK.EventTimeline.FORWARDS)?.getStateEvents('m.room.create', '')?.getTs(),
+            avatar_url: room.getLiveTimeline()?.getState(MatrixSDK.EventTimeline.FORWARDS)?.getStateEvents('m.room.avatar')[0]?.getContent()?.url ?? "",
+            last_updated: new Date().toISOString(),
         };
 
         const { error } = await supabase
@@ -83,14 +90,14 @@ export class SyncManager {
     }
 
     private async syncParticipants(room: MatrixSDK.Room) {
-        const members = await room.getJoinedMembers();
+        const members = room.getJoinedMembers();
 
         for (const member of members) {
             const participantData: ParticipantData = {
                 user_id: member.userId,
                 display_name: member.name,
                 avatar_url: member.getMxcAvatarUrl(),
-                membership: member.membership,
+                membership: member.membership ?? "",
                 room_id: room.roomId,
                 joined_ts: member.events.member?.getTs(),
                 last_updated: new Date().toISOString()
@@ -104,47 +111,54 @@ export class SyncManager {
         }
     }
 
-    private async syncHistoricalMessages(limit: number = 1000) {
-        for (const room of this.client.getRooms()) {
-            let token = null;
-            let messageCount = 0;
+    private async syncRoomMessages(room: MatrixSDK.Room): Promise<void> {
+        let endReached = false;
 
-            while (messageCount < limit) {
-                const timeline = await this.client.scrollback(room, this.BATCH_SIZE, token);
-                if (!timeline || timeline.length === 0) break;
+        while (!endReached) {
+            try {
+                const timeline = await this.client.scrollback(room, this.options.batchSize);
 
-                for (const event of timeline) {
-                    await this.processEvent(event, room);
-                    messageCount++;
-                    this.syncProgress.totalMessages++;
+                if (!timeline || timeline.getLiveTimeline().getEvents().length < this.options.batchSize) {
+                    endReached = true;
                 }
 
-                token = timeline[timeline.length - 1].getId();
-                await this.updateSyncProgress();
+                for (const event of timeline.getLiveTimeline().getEvents()) {
+                    await this.processEvent(event, room);
+                }
+
+                // Let the SDK handle rate limiting naturally
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+            } catch (error: any) {
+                console.error(`Error during message sync: ${error.message}`);
+                break;
             }
         }
     }
 
-    private async processEvent(event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) {
+    private async processEvent(event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room): Promise<void> {
         try {
+            let content = event.getContent();
+
             if (event.isEncrypted()) {
                 const decrypted = await cryptoManager.decryptEvent(event);
                 if (decrypted) {
-                    await this.messageQueue.enqueue({
-                        event: decrypted,
-                        room,
-                        type: 'message'
-                    });
+                    content = decrypted;
+                } else {
+                    throw new Error('Failed to decrypt event');
                 }
-            } else {
-                await this.messageQueue.enqueue({
-                    event,
-                    room,
-                    type: 'message'
-                });
             }
 
-            this.syncProgress.processedMessages++;
+            await this.messageQueue.enqueue({
+                event: {
+                    ...event,
+                    content,
+                    decrypted: event.isEncrypted()
+                },
+                room,
+                type: 'message'
+            });
+
         } catch (error: any) {
             console.error(`Failed to process event: ${error.message}`);
             await this.messageQueue.enqueue({
@@ -156,12 +170,27 @@ export class SyncManager {
         }
     }
 
+    private async performIncrementalSync(lastSync: string) {
+        await this.updateSyncStatus('incremental_sync');
+
+        await this.client.sync({
+            since: lastSync,
+            filter: {
+                room: {
+                    timeline: {
+                        limit: 50
+                    }
+                }
+            }
+        });
+    }
+
     private async startMessageQueueProcessor() {
         if (this.processingQueue) return;
         this.processingQueue = true;
 
         while (this.processingQueue) {
-            const batch = await this.messageQueue.dequeue(this.BATCH_SIZE);
+            const batch = await this.messageQueue.dequeue(this.options.batchSize);
             if (batch.length === 0) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 continue;
@@ -176,7 +205,7 @@ export class SyncManager {
             id: item.event.getId(),
             room_id: item.room.roomId,
             sender: item.event.getSender(),
-            content: item.event.getContent(),
+            content: item.event.content,
             timestamp: item.event.getDate()?.toISOString(),
             encrypted: item.event.isEncrypted(),
             event_type: item.event.getType(),
@@ -189,26 +218,22 @@ export class SyncManager {
 
         if (error) {
             console.error(`Failed to store message batch: ${error.message}`);
-            // requeue failed messages with exponential backoff
+            // Simple retry mechanism
+            await new Promise(resolve => setTimeout(resolve, 1000));
             await this.messageQueue.requeue(batch);
         }
     }
 
-    private async performIncrementalSync(lastSync: string) {
-        await this.updateSyncStatus('incremental_sync', undefined, 0.1);
-        const syncToken = await this.client.getSyncToken();
+    private async handleSyncError(error: Error): Promise<void> {
+        const errorMessage = error.message;
+        await this.updateSyncStatus('error', errorMessage);
 
-        if (syncToken) {
-            await this.client.sync({
-                since: syncToken,
-                filter: {
-                    room: {
-                        timeline: {
-                            limit: 50
-                        }
-                    }
-                }
-            });
+        if (errorMessage.includes('decrypt') || errorMessage.includes('crypto')) {
+            try {
+                await cryptoManager.recoverKeys();
+            } catch (recoveryError: any) {
+                console.error('Failed to recover keys:', recoveryError);
+            }
         }
     }
 
@@ -223,98 +248,104 @@ export class SyncManager {
         return data[0]?.last_sync;
     }
 
-    private async updateSyncProgress() {
-        const progress = (
-            (this.syncProgress.processedRooms / Math.max(1, this.syncProgress.totalRooms)) * 0.3 +
-            (this.syncProgress.processedMessages / Math.max(1, this.syncProgress.totalMessages)) * 0.7
-        );
-
-        await this.updateSyncStatus(this.syncState.state, undefined, progress);
-    }
-
-    async stopSync() {
-        try {
-            this.client.stopClient();
-            this.cleanupSyncListeners();
-            await this.updateSyncStatus('stopped', undefined, 0);
-            console.log('Sync process stopped.');
-        } catch (error: any) {
-            console.error(`Failed to stop sync: ${error.message}`);
-            throw error;
-        }
-    }
-
-    private setupSyncListeners() {
-        this.client.on(MatrixSDK.ClientEvent.Sync, async (state: string, prevState?: string, data?: any) => {
-            await this.handleSyncStateChange(state, data);
-        });
-
-        this.client.on(MatrixSDK.ClientEvent.Room, async (event: MatrixSDK.MatrixEvent, room: MatrixSDK.Room) => {
-            await this.processEvent(event, room);
-        });
-
-    }
-
-    private cleanupSyncListeners() {
-        this.client.removeAllListeners(MatrixSDK.ClientEvent.Sync);
-        this.client.removeAllListeners(MatrixSDK.ClientEvent.Room);
-        console.log('Sync listeners cleaned up.');
-    }
-
-    private async handleSyncStateChange(state: string, data?: any) {
-        let progress = this.syncState.progress;
-
-        switch (state) {
-            case 'PREPARING':
-            progress = 0.1;
-            break;
-            case 'SYNCING':
-            progress = 1;
-            break;
-            case 'ERROR':
-            await this.updateSyncStatus('error', data?.error?.message);
-            return;
-        }
-
-        await this.updateSyncStatus(state.toLowerCase(), undefined, progress);
-    }
-
     private async updateSyncStatus(
         state: string,
-        error?: string,
-        progress?: number
+        error?: string
     ) {
         this.syncState = {
             state: state as SyncStatus['state'],
-            progress,
             lastSync: new Date(),
             error,
         };
 
         await supabase.from('sync_status').upsert({
             state: this.syncState.state,
-            progress: this.syncState.progress,
             last_sync: this.syncState.lastSync?.toISOString(),
             error: this.syncState.error,
         });
     }
 
+    private setupSyncListeners() {
+        // Sync event listener
+        this.client.on("sync", async (
+            state: MatrixSDK.SyncState,
+            prevState: MatrixSDK.SyncState | null,
+            data?: MatrixSDK.ISyncStateData
+        ) => {
+            if (state === 'ERROR') {
+                await this.updateSyncStatus('error', data?.error?.message);
+            } else {
+                await this.updateSyncStatus(state.toLowerCase());
+            }
+        });
+
+        // Room event listener
+        this.client.on("Room", (room: MatrixSDK.Room) => {
+            // Get the latest event from the room
+            const timeline = room.getLiveTimeline();
+            const events = timeline.getEvents();
+            if (events.length > 0) {
+                const latestEvent = events[events.length - 1];
+                if(latestEvent) {
+                    this.processEvent(latestEvent, room).catch(error => {
+                        console.error('Failed to process room event:', error);
+                    });
+                }
+
+            }
+        });
+
+        // Room.timeline listener for real-time events
+        this.client.on(MatrixSDK.RoomEvent.Timeline, (
+            event: MatrixSDK.MatrixEvent,
+            room: MatrixSDK.Room,
+            toStartOfTimeline: boolean
+        ) => {
+            if (!toStartOfTimeline) {
+                this.processEvent(event, room).catch(error => {
+                    console.error('Failed to process timeline event:', error);
+                });
+            }
+        });
+    }
+
+    async stopSync() {
+        try {
+            this.client.stopClient();
+            this.client.removeAllListeners(MatrixSDK.ClientEvent.Sync);
+            this.client.removeAllListeners(MatrixSDK.ClientEvent.Room);
+            this.processingQueue = false;
+            await this.updateSyncStatus('stopped');
+        } catch (error: any) {
+            console.error(`Failed to stop sync: ${error.message}`);
+            throw error;
+        }
+    }
+
     async getSyncStatus(): Promise<{
         syncState: SyncStatus;
-        progress: SyncProgress;
         queueStatus: {
             pending: number;
             processing: number;
             failed: number;
         };
+        cryptoStatus: {
+            initialized: boolean;
+            totalKeys: number;
+            backedUpKeys: number;
+        };
     }> {
         const queueStatus = await this.messageQueue.getStatus();
+        const cryptoStatus = cryptoManager.getStatus();
 
         return {
             syncState: this.syncState,
-            progress: this.syncProgress,
-            queueStatus
+            queueStatus,
+            cryptoStatus: {
+                initialized: cryptoStatus.initialized,
+                totalKeys: cryptoStatus.keysStatus.totalKeys,
+                backedUpKeys: cryptoStatus.keysStatus.backedUpKeys
+            }
         };
     }
-
 }
