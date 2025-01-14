@@ -21,25 +21,24 @@ export class SyncManager {
     ) {
         this.client = client;
         this.options = {
-            batchSize: options.batchSize || 50,
+            batchSize: options.batchSize || 10000,
             initialSyncLimit: options.initialSyncLimit || 30,
             timeoutMs: options.timeoutMs || 30000,
         };
         this.messageQueue = new MessageQueueImpl(this.options.batchSize);
     }
 
-    async startSync(options: { fullSync?: boolean } = {}): Promise<void> {
+    async startSync(): Promise<void> {
         try {
             if (!cryptoManager.getStatus().initialized) {
                 throw new Error('Crypto manager must be initialized before starting sync');
             }
 
-            const lastSync = await this.getLastSyncTimestamp();
-
-            if (options.fullSync || !lastSync) {
-                await this.performFullSync();
-            } else {
-                await this.performIncrementalSync(lastSync);
+            const rooms = this.client.getRooms();
+            for (const room of rooms) {
+                await this.syncRoom(room);
+                await this.syncParticipants(room);
+                await this.syncRoomMessages(room);
             }
 
             this.setupSyncListeners();
@@ -49,22 +48,6 @@ export class SyncManager {
             });
 
             this.startMessageQueueProcessor();
-        } catch (error: any) {
-            await this.handleSyncError(error);
-            throw error;
-        }
-    }
-
-    private async performFullSync(): Promise<void> {
-        await this.updateSyncStatus('full_sync');
-
-        try {
-            const rooms = this.client.getRooms();
-            for (const room of rooms) {
-                await this.syncRoom(room);
-                await this.syncParticipants(room);
-                await this.syncRoomMessages(room);
-            }
         } catch (error: any) {
             await this.handleSyncError(error);
             throw error;
@@ -170,21 +153,6 @@ export class SyncManager {
         }
     }
 
-    private async performIncrementalSync(lastSync: string) {
-        await this.updateSyncStatus('incremental_sync');
-
-        await this.client.sync({
-            since: lastSync,
-            filter: {
-                room: {
-                    timeline: {
-                        limit: 50
-                    }
-                }
-            }
-        });
-    }
-
     private async startMessageQueueProcessor() {
         if (this.processingQueue) return;
         this.processingQueue = true;
@@ -237,17 +205,6 @@ export class SyncManager {
         }
     }
 
-    private async getLastSyncTimestamp(): Promise<string | null> {
-        const { data, error } = await supabase
-            .from('sync_status')
-            .select('last_sync')
-            .order('last_sync', { ascending: false })
-            .limit(1);
-
-        if (error || !data.length) return null;
-        return data[0]?.last_sync;
-    }
-
     private async updateSyncStatus(
         state: string,
         error?: string
@@ -267,10 +224,10 @@ export class SyncManager {
 
     private setupSyncListeners() {
         // Sync event listener
-        this.client.on("sync", async (
+        this.client.on(MatrixSDK.ClientEvent.Sync, async (
             state: MatrixSDK.SyncState,
-            prevState: MatrixSDK.SyncState | null,
-            data?: MatrixSDK.ISyncStateData
+            _prevState: MatrixSDK.SyncState | null,
+            data?: MatrixSDK.SyncStateData
         ) => {
             if (state === 'ERROR') {
                 await this.updateSyncStatus('error', data?.error?.message);
@@ -279,29 +236,44 @@ export class SyncManager {
             }
         });
 
-        // Room event listener
-        this.client.on("Room", (room: MatrixSDK.Room) => {
-            // Get the latest event from the room
-            const timeline = room.getLiveTimeline();
-            const events = timeline.getEvents();
-            if (events.length > 0) {
-                const latestEvent = events[events.length - 1];
-                if(latestEvent) {
-                    this.processEvent(latestEvent, room).catch(error => {
-                        console.error('Failed to process room event:', error);
-                    });
-                }
-
-            }
+        this.client.on(MatrixSDK.ClientEvent.Event, function (event) {
+            console.log(event.getType());
         });
+
+        // Room event listener
+        // this.client.on("Room", (room: MatrixSDK.Room) => {
+        //     // Get the latest event from the room
+        //     const timeline = room.getLiveTimeline();
+        //     const events = timeline.getEvents();
+        //     if (events.length > 0) {
+        //         const latestEvent = events[events.length - 1];
+        //         if(latestEvent) {
+        //             this.processEvent(latestEvent, room).catch(error => {
+        //                 console.error('Failed to process room event:', error);
+        //             });
+        //         }
+
+        //     }
+        // });
+
+        // this.client.on(MatrixSDK.RoomEvent.Name, (room: MatrixSDK.Room) => {
+        //     console.log(`Room name changed to: ${room.name}`);
+        //     // Handle room name changes here (e.g., update UI)
+        //   });
+
+        //   // Listener for member events (join, leave, ban, etc.)
+        //   this.client.on(MatrixSDK.RoomEvent.Member, (event: MatrixSDK.MatrixEvent, member: any) => {
+        //     console.log(`Member event for ${member.userId}: ${member.membership}`);
+        //     // Handle member events here (e.g., update member list)
+        //   });
 
         // Room.timeline listener for real-time events
         this.client.on(MatrixSDK.RoomEvent.Timeline, (
             event: MatrixSDK.MatrixEvent,
-            room: MatrixSDK.Room,
-            toStartOfTimeline: boolean
+            room: MatrixSDK.Room | undefined,
+            toStartOfTimeline: boolean | undefined
         ) => {
-            if (!toStartOfTimeline) {
+            if (!toStartOfTimeline && room) {
                 this.processEvent(event, room).catch(error => {
                     console.error('Failed to process timeline event:', error);
                 });

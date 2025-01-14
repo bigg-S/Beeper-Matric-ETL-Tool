@@ -4,8 +4,8 @@ import { cryptoManager } from '../matrix/crypto';
 import { SyncManager } from '../matrix/sync';
 import { supabase } from '../db/client';
 import { z } from 'zod';
-import { KeyFormat } from "crypto";
 import { authenticateRequest } from '../middlware/auth';
+import { KeyExportOptionsCustom } from '@/types';
 
 const router = Router();
 let matrixClient: MatrixClient | null = null;
@@ -72,7 +72,7 @@ router.get('/sync/status', authenticateRequest, async (_req, res) => {
         res.status(400).json({ error: 'Sync not initialized' });
         return;
     }
-    res.json(syncManager.getSyncState());
+    res.json(syncManager.getSyncStatus());
 });
 
 router.post('/sync/start', authenticateRequest, async (_req, res) => {
@@ -190,30 +190,27 @@ router.get('/users/:userId', authenticateRequest, async (req, res) => {
 
 // Crypto Routes
 
-const keyFormatSchema = z.enum();
-
+const keyFormatSchema = z.enum(['pkcs8', 'spki', 'pkcs1', 'sec1'] as const);
 const formatOptions = z.union([
     z.literal('json'),
     z.literal('file'),
-    // other custom format
 ]);
 
 export const exportKeysSchema = z.object({
     roomKeys: z.boolean().optional(),
     megolmKeys: z.boolean().optional(),
     olmKeys: z.boolean().optional(),
-    format: formatOptions,
+    format: z.union([keyFormatSchema, formatOptions]),
     password: z.string().optional(),
     iterations: z.number().positive().optional(),
-    type: keyFormatSchema
+    type: keyFormatSchema,
 }).strict();
 
 router.post('/crypto/export', authenticateRequest, async (req, res) => {
     try {
-        const keyExportOpts = exportKeysSchema.parse(req.body);
+        const keyExportOpts: KeyExportOptionsCustom = exportKeysSchema.parse(req.body);
         const keys = await cryptoManager.exportKeys(keyExportOpts);
         res.json({ keys });
-
     } catch (error: any) {
         handleError(res, error);
     }

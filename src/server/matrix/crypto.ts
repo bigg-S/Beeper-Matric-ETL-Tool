@@ -135,7 +135,7 @@ export class CryptoManager {
             }
 
             this.client = client;
-            this.crypto = await OlmMachine.initialize(userId, deviceId, this.storePath);
+            this.crypto = await OlmMachine.initialize(userId, deviceId, this.storePath, passphrase);
 
             // Set up crypto callbacks
             client.cryptoCallbacks = {

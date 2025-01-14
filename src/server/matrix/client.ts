@@ -1,27 +1,26 @@
 import * as MatrixSDK from 'matrix-js-sdk';
 import { IMyDevice, MatrixEvent, PendingEventOrdering, Room } from 'matrix-js-sdk';
-import { MatrixConfig } from '../../types';
+import { MatrixAuthConfig } from '../../types';
 import { cryptoManager } from './crypto';
 import { supabase } from '../db/client';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
-import { RoomId } from '@matrix-org/matrix-sdk-crypto-nodejs';
 
 dotenv.config();
 
 export class MatrixClient extends EventEmitter {
     private client: MatrixSDK.MatrixClient;
-    private config: MatrixConfig;
+    private authConfig: MatrixAuthConfig;
     private syncToken: string | null = null;
 
-    constructor(config: MatrixConfig) {
+    constructor(authConfig: MatrixAuthConfig) {
         super();
-        this.config = config;
+        this.authConfig = authConfig;
         this.client = MatrixSDK.createClient({
             pickleKey: process.env.PICKLE_KEY,
-            baseUrl: `https://${config.domain}`,
+            baseUrl: `https://${authConfig.domain}`,
             accessToken: process.env.MATRIX_ACCESS_TOKEN,
-            userId: `@${config.username}:${config.domain}`,
+            userId: `@${authConfig.username}:${authConfig.domain}`,
         });
     }
 
@@ -35,14 +34,17 @@ export class MatrixClient extends EventEmitter {
     private async login() {
         try {
             const loginResponse = await this.client.login('m.login.password', {
-                user: this.config.username,
-                password: this.config.password,
+                user: this.authConfig.username,
+                password: this.authConfig.password,
             });
 
             await supabase.from('device_credentials').insert({
                 user_id: this.client.getUserId(),
                 device_id: loginResponse.device_id,
                 access_token: loginResponse.access_token,
+                refresh_token: loginResponse.refresh_token,
+                expires_in_ms: loginResponse.expires_in_ms,
+                well_known: loginResponse.well_known,
                 created_at: new Date().toISOString(),
             });
         } catch (error: any) {
@@ -87,6 +89,8 @@ export class MatrixClient extends EventEmitter {
     private async setupCrypto() {
         await cryptoManager.initCrypto(this.client);
 
+        await this.client.initRustCrypto();
+
         const cryptoApi = this.client.getCrypto();
         if (cryptoApi) {
             const keyBackupInfo = await cryptoApi.getKeyBackupInfo();
@@ -95,8 +99,10 @@ export class MatrixClient extends EventEmitter {
             }
         }
 
-        this.client.on(MatrixSDK., async (userId: string, deviceId: string) => {
-            await this.handleDeviceVerification(userId, deviceId);
+        this.client.getCrypto()?.bootstrapCrossSigning({
+            authUploadDeviceSigningKeys: async (makeRequest) => {
+                return makeRequest(this.authConfig).then(() => {});
+            },
         });
 
         this.client.on(MatrixSDK.Crypto.CryptoEvent.KeyBackupStatus, async (status) => {
@@ -129,13 +135,12 @@ export class MatrixClient extends EventEmitter {
 
         this.client.on(MatrixSDK.ClientEvent.Sync, async (state, _, data) => {
             if (state === 'PREPARED' || state === 'SYNCING') {
-                this.syncToken = data.nextBatch;
                 await this.saveSyncToken();
             }
             await this.updateSyncStatus(state, data);
         });
 
-        this.client.on(MatrixSDK.RoomEvent.Timeline, async (event, room) => {
+        this.client.on(MatrixSDK.RoomEvent.Timeline, async (event) => {
             await this.processEvent(event);
         });
 
@@ -143,7 +148,6 @@ export class MatrixClient extends EventEmitter {
             filter: filterDef,
             initialSyncLimit: 50,
             pendingEventOrdering: "chronological" as PendingEventOrdering,
-            syncToken: this.syncToken,
         });
     }
 
@@ -156,31 +160,31 @@ export class MatrixClient extends EventEmitter {
         }
     }
 
-    private async processRoom(room: Room) {
-        const timeline = room.getLiveTimeline();
-        const state = timeline.getState(MatrixSDK.EventTimeline.FORWARDS);
+    // private async processRoom(room: Room) {
+    //     const timeline = room.getLiveTimeline();
+    //     const state = timeline.getState(MatrixSDK.EventTimeline.FORWARDS);
 
-        const roomData = {
-            id: room.roomId,
-            name: room.name,
-            topic: state?.getStateEvents('m.room.topic')?.[0]?.getContent().topic,
-            encrypted: state!.getStateEvents('m.room.encryption')?.length > 0,
-            members: Array.from(room.getJoinedMembers().map((m) => m.userId)),
-            created_at: new Date().toISOString(),
-            last_updated: new Date().toISOString(),
-        };
+    //     const roomData = {
+    //         id: room.roomId,
+    //         name: room.name,
+    //         topic: state?.getStateEvents('m.room.topic')?.[0]?.getContent().topic,
+    //         encrypted: state!.getStateEvents('m.room.encryption')?.length > 0,
+    //         members: Array.from(room.getJoinedMembers().map((m) => m.userId)),
+    //         created_at: new Date().toISOString(),
+    //         last_updated: new Date().toISOString(),
+    //     };
 
-        await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
-    }
+    //     await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
+    // }
 
-    private async processEvent(event: MatrixEvent, roomId: RoomId) {
+    private async processEvent(event: MatrixEvent) {
         if (event.getType() !== 'm.room.message') return;
 
         try {
             let content = event.getContent();
 
             if (event.isEncrypted()) {
-                const decryptedEvent = await cryptoManager.decryptEvent(event, roomId);
+                const decryptedEvent = await cryptoManager.decryptEvent(event);
                 content = decryptedEvent.getContent();
             }
 
@@ -210,17 +214,17 @@ export class MatrixClient extends EventEmitter {
         }
     }
 
-    private async handleDeviceVerification(userId: string, deviceId: string) {
-        const device = await this.client.getDevice(deviceId) as IMyDevice;
-        await supabase.from('device_verifications').insert({
-            user_id: userId,
-            device_id: deviceId,
-            trust_level: device.trustLevel?.crossSigningVerified ? 'verified' : 'unverified',
-            updated_at: new Date().toISOString(),
-        });
-    }
+    // private async handleDeviceVerification(userId: string, deviceId: string) {
+    //     const device = await this.client.getDevice(deviceId) as IMyDevice;
+    //     await supabase.from('device_verifications').insert({
+    //         user_id: userId,
+    //         device_id: deviceId,
+    //         display_name: device.display_name,
+    //         updated_at: new Date().toISOString(),
+    //     });
+    // }
 
-    private async handleKeyBackupStatus(status: string) {
+    private async handleKeyBackupStatus(status: boolean) {
         await supabase.from('key_backup_status').insert({
             status,
             created_at: new Date().toISOString(),

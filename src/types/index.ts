@@ -2,7 +2,7 @@ import { ISigned } from "matrix-js-sdk/lib/@types/signed";
 import * as sdk from "matrix-js-sdk"
 import { KeyExportOptions, KeyFormat } from "crypto";
 
-export interface MatrixConfig {
+export interface MatrixAuthConfig {
     username: string;
     password: string;
     domain: string;
@@ -77,13 +77,13 @@ export interface EncryptedData {
     algorithm: string;
 }
 
-type CustomKeyFormat = KeyFormat | 'file' | 'json';
+type CustomKeyFormat = 'pkcs8' | 'spki' | 'pkcs1' | 'sec1' | 'file' | 'json';
 
 export interface KeyExportOptionsCustom extends Omit<KeyExportOptions<KeyFormat>, 'format'> {
     roomKeys?: boolean;
     megolmKeys?: boolean;
     olmKeys?: boolean;
-    format: CustomKeyFormat; // ensuring `format` is exactly of type `T`
+    format: CustomKeyFormat;
     password?: string;
     iterations?: number;
 }
@@ -152,6 +152,4 @@ export interface SyncManagerOptions {
     batchSize?: number;
     initialSyncLimit?: number;
     timeoutMs?: number;
-    retryDelayMs?: number;
-    maxRetries?: number;
 }
