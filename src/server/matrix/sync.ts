@@ -19,16 +19,13 @@ export class SyncManager {
     private processingQueue: boolean = false;
     private lastSyncToken: string | null = null;
 
-    constructor(
-        client: MatrixSDK.MatrixClient,
-        options: SyncManagerOptions
-    ) {
+    constructor(client: MatrixSDK.MatrixClient, options?: SyncManagerOptions) {
         this.client = client;
         this.options = {
-            batchSize: options.batchSize || 1000,
-            initialSyncLimit: options.initialSyncLimit || 30,
-            timeoutMs: options.timeoutMs || 30000,
-            maxTimelineEntries: options.maxTimelineEntries || 50
+            batchSize: options?.batchSize || 1000,
+            initialSyncLimit: options?.initialSyncLimit || 30,
+            timeoutMs: options?.timeoutMs || 30000,
+            maxTimelineEntries: options?.maxTimelineEntries || 50
         };
 
         // Initialize SyncAccumulator with max timeline entries
@@ -42,8 +39,17 @@ export class SyncManager {
                 onSyncCompleted: async () => {
                     await this.processPendingEvents();
                 },
-                onRoomKeyReceived: async () => {
-                    await this.handleRoomKeyUpdate(); // TODO: custom callback
+                preprocessToDeviceMessages: function (events: MatrixSDK.IToDeviceEvent[]): Promise<MatrixSDK.IToDeviceEvent[]> {
+                    throw new Error('Function not implemented.');
+                },
+                processKeyCounts: function (oneTimeKeysCounts?: Record<string, number>, unusedFallbackKeys?: string[]): Promise<void> {
+                    throw new Error('Function not implemented.');
+                },
+                processDeviceLists: function (deviceLists: MatrixSDK.IDeviceLists): Promise<void> {
+                    throw new Error('Function not implemented.');
+                },
+                onCryptoEvent: function (room: MatrixSDK.Room, event: MatrixSDK.MatrixEvent): Promise<void> {
+                    throw new Error('Function not implemented.');
                 }
             },
             canResetEntireTimeline: (roomId: string) => {

@@ -2,15 +2,17 @@
   "compilerOptions": {
     // Target latest version of ECMAScript
     "target": "ES2022",
-    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
     "module": "ESNext",
-
     // Module resolution
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-
     // Strict Type-Checking
     "strict": true,
     "noImplicitAny": true,
@@ -21,7 +23,6 @@
     "noImplicitThis": true,
     "useUnknownInCatchVariables": true,
     "alwaysStrict": true,
-
     // Additional Checks
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -29,36 +30,48 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-
     // Module Features
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-
     // JSX
     "jsx": "preserve",
-
     // Emit
     "noEmit": true,
     "incremental": true,
-
     // Path aliases
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@components/*": ["src/web/components/*"],
-      "@server/*": ["src/server/*"],
-      "@lib/*": ["src/lib/*"],
-      "@types/*": ["src/types/*"]
-  },
-
+      "@/*": [
+        "src/*"
+      ],
+      "@components/*": [
+        "src/web/components/*"
+      ],
+      "@server/*": [
+        "src/server/*"
+      ],
+      "@lib/*": [
+        "src/lib/*"
+      ],
+      "@types/*": [
+        "src/types/*"
+      ]
+    },
     // Skip type checking of node_modules
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowJs": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
   },
   "include": [
-    "next-env.d.ts",
     "**/*.ts",
-    "**/*.tsx"
+    "**/*.tsx",
+    "next-env.d.ts",
+    ".next/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",
