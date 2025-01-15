@@ -1,9 +1,9 @@
 'use client'
 
 import { useApp } from './providers'
-import { AuthForm } from '../components/auth-form'
-import { SyncStatus } from '../components/sync-status'
-import { Dashboard } from '../components/dashboard'
+import { AuthForm } from './components/auth-form'
+import { SyncStatus } from './components/sync-status'
+import { Dashboard } from './components/dashboard'
 
 export default function Home() {
     const { auth } = useApp()

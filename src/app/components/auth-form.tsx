@@ -2,48 +2,69 @@
 
 import { useState } from 'react'
 import { Card, CardHeader, CardBody, Input, Button } from '@nextui-org/react'
-import { useApp } from '../app/providers'
+import { useApp } from '../providers'
+import { LoginCredentials } from '../types'
 
 export function AuthForm() {
     const { setAuth } = useApp()
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
-    const [formData, setFormData] = useState({
+    const [formData, setFormData] = useState<LoginCredentials>({
         username: '',
         password: '',
         domain: 'beeper.com'
     })
+
+    const validateDomain = (domain: string): boolean => {
+        try {
+        new URL(`https://${domain}`)
+        return true
+        } catch {
+        return false
+        }
+    }
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         setLoading(true)
         setError(null)
 
+        // Validate domain format
+        if (!validateDomain(formData.domain)) {
+        setError('Please enter a valid domain')
+        setLoading(false)
+        return
+        }
+
         try {
-        const response = await fetch('/api/auth', {
+        const response = await fetch('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
             username: formData.username,
             password: formData.password,
-            domain: formData.domain,
+            domain: `https://${formData.domain}` // Ensure domain is properly formatted
             }),
         })
 
+        const data = await response.json()
+
         if (!response.ok) {
-            const data = await response.json()
-            throw new Error(data.message || 'Authentication failed')
+            throw new Error(data.error || 'Authentication failed')
         }
 
-        setAuth({
+        if (data.success && data.token) {
+            setAuth({
             isAuthenticated: true,
-            matrixUsername: formData.username,
-            matrixDomain: formData.domain,
-        })
+            token: data.token,
+            })
+        } else {
+            throw new Error('No token received')
+        }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Authentication failed')
+        setError(err instanceof Error ? err.message : 'Authentication failed')
         } finally {
-            setLoading(false)
+        setLoading(false)
         }
     }
 
@@ -61,6 +82,7 @@ export function AuthForm() {
                         value={formData.username}
                         onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                         isRequired
+                        isInvalid={Boolean(error)}
                     />
                     <Input
                         label="Password"
@@ -69,6 +91,7 @@ export function AuthForm() {
                         value={formData.password}
                         onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                         isRequired
+                        isInvalid={Boolean(error)}
                     />
                     <Input
                         label="Matrix Domain"
@@ -76,9 +99,12 @@ export function AuthForm() {
                         value={formData.domain}
                         onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
                         isRequired
+                        isInvalid={Boolean(error)}
                     />
                     {error && (
-                        <div className="text-danger text-sm">{error}</div>
+                        <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">
+                        {error}
+                        </div>
                     )}
                     <Button
                         color="primary"

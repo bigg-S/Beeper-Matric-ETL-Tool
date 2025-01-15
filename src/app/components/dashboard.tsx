@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { Card, CardBody, Table, TableHeader, TableColumn, TableBody, TableRow, TableCell, Button } from '@nextui-org/react'
-import { useApp } from '../app/providers'
+import { useApp } from '../providers'
 
 type SyncStats = {
     totalRooms: number
@@ -42,7 +42,7 @@ export function Dashboard() {
             <div>
             <h1 className="text-2xl font-bold">Dashboard</h1>
             <p className="text-default-500">
-                Connected as {auth.matrixUsername}@{auth.matrixDomain}
+                Connected as {auth.user?.display_name}@{auth.user?.user_id}
             </p>
             </div>
             <Button

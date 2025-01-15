@@ -2,11 +2,7 @@
   "compilerOptions": {
     // Target latest version of ECMAScript
     "target": "ES2022",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ESNext"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "module": "ESNext",
     // Module resolution
     "moduleResolution": "bundler",
@@ -42,21 +38,11 @@
     // Path aliases
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "src/*"
-      ],
-      "@components/*": [
-        "src/web/components/*"
-      ],
-      "@server/*": [
-        "src/server/*"
-      ],
-      "@lib/*": [
-        "src/lib/*"
-      ],
-      "@types/*": [
-        "src/types/*"
-      ]
+      "@/*": ["src/*"],
+      "@components/*": ["src/web/components/*"],
+      "@server/*": ["src/server/*"],
+      "@lib/*": ["src/lib/*"],
+      "@types/*": ["src/server/types/*"]
     },
     // Skip type checking of node_modules
     "skipLibCheck": true,
@@ -67,16 +53,6 @@
       }
     ]
   },
-  "include": [
-    "**/*.ts",
-    "**/*.tsx",
-    "next-env.d.ts",
-    ".next/types/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    ".next",
-    "coverage"
-  ]
+  "include": ["**/*.ts", "**/*.tsx", "next-env.d.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", "dist", ".next", "coverage"]
 }
