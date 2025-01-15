@@ -1,5 +1,6 @@
 {
   "name": "beeper-matric-etl-tool",
+  "type": "module",
   "version": "1.0.0",
   "description": "ETL pipeline for syncing Matrix/Beeper chat data to Supabase with end-to-end encryption support",
   "main": "dist/server/index.js",
@@ -7,11 +8,11 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",
-    "dev:web": "next dev",
-    "build": "next build && tsc --project tsconfig.server.json",
+    "dev:web": "npx next dev",
+    "build": "npx next build && tsc --project tsconfig.server.json",
     "start": "node dist/server/index.js",
     "lint": "eslint . --ext .ts,.tsx --fix",
-    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "format": "npx prettier --write \"src/**/*.{ts,tsx}\"",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -86,6 +87,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^3.4.17",
+    "uri-js": "^4.2.2",
     "winston": "^3.17.0",
     "zod": "^3.24.1"
   }

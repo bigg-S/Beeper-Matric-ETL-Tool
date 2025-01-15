@@ -2,12 +2,6 @@ import { ISigned } from "matrix-js-sdk/lib/@types/signed";
 import * as sdk from "matrix-js-sdk"
 import { KeyExportOptions, KeyFormat } from "crypto";
 
-export interface MatrixAuthConfig {
-    username: string;
-    password: string;
-    domain: string;
-}
-
 export interface UserPayload {
     username: string;
     password: string;
@@ -37,6 +31,15 @@ declare global {
             user?: UserPayload;
         }
     }
+}
+
+// Auth:
+
+export interface BeeperAuthConfig {
+    username: string;
+    password: string;
+    domain: string;
+    deviceId?: string;
 }
 
 
@@ -100,40 +103,28 @@ export class CryptoError extends Error {
 
 // Sync:
 export interface SyncStatus {
-    state: 'initializing' | 'syncing' | 'synchronized' | 'error';
-    progress?: number;
+    state: 'initializing' | 'syncing' | 'error' | 'stopped';
     lastSync?: Date;
     error?: string;
 }
 
-export interface MessageQueue {
-    enqueue(item: any): Promise<void>;
-    dequeue(batchSize: number): Promise<any[]>;
-    requeue(items: any[]): Promise<void>;
-    getStatus(): Promise<{
-        pending: number;
-        processing: number;
-        failed: number;
-    }>;
+export interface ParticipantData {
+    user_id: string;
+    display_name: string;
+    avatar_url?: string;
+    membership: string;
+    room_id: string;
+    joined_ts?: number;
+    last_updated: string;
 }
 
 export interface RoomData {
     id: string;
     name: string;
-    topic?: string;
+    topic: string;
     is_encrypted: boolean;
-    created_ts: number | undefined;
+    created_ts?: number;
     avatar_url?: string;
-    last_updated: string;
-}
-
-export interface ParticipantData {
-    user_id: string;
-    display_name?: string;
-    avatar_url?: string;
-    membership: string;
-    room_id: string;
-    joined_ts?: number;
     last_updated: string;
 }
 
@@ -142,13 +133,14 @@ export interface SyncProgress {
     processedRooms: number;
     totalMessages: number;
     processedMessages: number;
-    lastMessageTimestamp: string | null;
-    encryptedMessages: number,
-    decryptedMessages: number,
-    failedDecryptions: number
+    totalParticipants: number;
+    processedParticipants: number;
+    currentPhase: 'initializing' | 'keys' | 'rooms' | 'messages' | 'participants' | 'incremental' | 'error';
+    error?: string;
 }
 
 export interface SyncManagerOptions {
+    maxTimelineEntries: number;
     batchSize?: number;
     initialSyncLimit?: number;
     timeoutMs?: number;
