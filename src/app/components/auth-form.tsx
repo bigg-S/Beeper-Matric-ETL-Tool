@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Card, CardHeader, CardBody, Input, Button } from '@nextui-org/react'
 import { useApp } from '../providers'
 import { LoginCredentials } from '../types'
+import APIClient from '../lib/api'
 
 export function AuthForm() {
     const { setAuth } = useApp()
@@ -17,10 +18,10 @@ export function AuthForm() {
 
     const validateDomain = (domain: string): boolean => {
         try {
-        new URL(`https://${domain}`)
-        return true
+            new URL(`https://${domain}`)
+            return true
         } catch {
-        return false
+            return false
         }
     }
 
@@ -29,42 +30,37 @@ export function AuthForm() {
         setLoading(true)
         setError(null)
 
-        // Validate domain format
         if (!validateDomain(formData.domain)) {
-        setError('Please enter a valid domain')
-        setLoading(false)
-        return
+            setError('Please enter a valid domain')
+            setLoading(false)
+            return
         }
 
         try {
-        const response = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-            username: formData.username,
-            password: formData.password,
-            domain: `https://${formData.domain}` // Ensure domain is properly formatted
-            }),
-        })
-
-        const data = await response.json()
-
-        if (!response.ok) {
-            throw new Error(data.error || 'Authentication failed')
-        }
-
-        if (data.success && data.token) {
-            setAuth({
-            isAuthenticated: true,
-            token: data.token,
+            const response = await APIClient.login({
+                username: formData.username,
+                password: formData.password,
+                domain: `https://${formData.domain}`
             })
-        } else {
-            throw new Error('No token received')
-        }
+
+            if (response.data.success) {
+                setAuth({
+                    isAuthenticated: true,
+                    token: response.data.token,
+                })
+
+                try {
+                    const userData = await APIClient.get_user()
+                    console.log("User data: ", userData)
+                    // Handle user data as needed
+                } catch (userError) {
+                    console.error('Error fetching user data:', userError)
+                }
+            }
         } catch (err) {
-        setError(err instanceof Error ? err.message : 'Authentication failed')
+            setError(err instanceof Error ? err.message : 'Authentication failed')
         } finally {
-        setLoading(false)
+            setLoading(false)
         }
     }
 
@@ -103,7 +99,7 @@ export function AuthForm() {
                     />
                     {error && (
                         <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">
-                        {error}
+                            {error}
                         </div>
                     )}
                     <Button

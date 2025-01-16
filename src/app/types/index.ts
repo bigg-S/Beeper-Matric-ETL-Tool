@@ -21,3 +21,14 @@ export interface AuthResponse {
     token?: string;
     error?: string;
 }
+
+export interface MatrixConfig {
+    username: string;
+    password: string;
+    domain: string;
+}
+
+export interface LoginResponse {
+    success: boolean;
+    token?: string;
+}
