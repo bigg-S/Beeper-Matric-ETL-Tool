@@ -1,26 +1,26 @@
 import * as MatrixSDK from 'matrix-js-sdk';
-import { IMyDevice, MatrixEvent, PendingEventOrdering, Room } from 'matrix-js-sdk';
-import { MatrixAuthConfig } from '../types';
+import { MatrixEvent, PendingEventOrdering } from 'matrix-js-sdk';
 import { cryptoManager } from './crypto';
-import { supabase } from '../db/client';
+import { pgPool } from '../db/client';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
+import { UserPayload } from '../types';
 
 dotenv.config();
 
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient;
-  private authConfig: MatrixAuthConfig;
+  private authConfig: UserPayload;
   private syncToken: string | null = null;
 
-  constructor(authConfig: MatrixAuthConfig) {
+  constructor(authConfig: UserPayload) {
     super();
     this.authConfig = authConfig;
     this.client = MatrixSDK.createClient({
-      pickleKey: process.env.PICKLE_KEY,
       baseUrl: `https://${authConfig.domain}`,
       accessToken: process.env.MATRIX_ACCESS_TOKEN,
-      userId: `@${authConfig.username}:${authConfig.domain}`,
+      refreshToken: process.env.MATRIX_REFRESH_TOKEN,
+      userId: `@${authConfig.username}:${authConfig.domain}`
     });
   }
 
@@ -38,15 +38,22 @@ export class MatrixClient extends EventEmitter {
         password: this.authConfig.password,
       });
 
-      await supabase.from('device_credentials').insert({
-        user_id: this.client.getUserId(),
-        device_id: loginResponse.device_id,
-        access_token: loginResponse.access_token,
-        refresh_token: loginResponse.refresh_token,
-        expires_in_ms: loginResponse.expires_in_ms,
-        well_known: loginResponse.well_known,
-        created_at: new Date().toISOString(),
-      });
+      const query = `
+        INSERT INTO device_credentials (
+          user_id, device_id, access_token, refresh_token,
+          expires_in_ms, well_known, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `;
+
+      await pgPool.query(query, [
+        this.client.getUserId(),
+        loginResponse.device_id,
+        loginResponse.access_token,
+        loginResponse.refresh_token,
+        loginResponse.expires_in_ms,
+        loginResponse.well_known,
+        new Date().toISOString()
+      ]);
     } catch (error: any) {
       throw new Error(`Failed to login: ${error.message}`);
     }
@@ -55,16 +62,17 @@ export class MatrixClient extends EventEmitter {
   public async logout() {
     try {
       await this.client.logout();
-
       this.syncToken = null;
 
       const userId = this.client.getUserId();
       if (userId) {
-        await supabase.from('device_credentials').delete().eq('user_id', userId);
+        await pgPool.query(
+          'DELETE FROM device_credentials WHERE user_id = $1',
+          [userId]
+        );
       }
 
       this.client.stopClient();
-
       console.log('Successfully logged out');
     } catch (error: any) {
       console.error(`Failed to logout: ${error.message}`);
@@ -111,14 +119,15 @@ export class MatrixClient extends EventEmitter {
   }
 
   private async loadSyncToken() {
-    const { data } = await supabase
-      .from('sync_status')
-      .select('next_batch')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    const query = `
+      SELECT next_batch
+      FROM sync_status
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
 
-    this.syncToken = data?.next_batch || null;
+    const result = await pgPool.query(query);
+    this.syncToken = result.rows[0]?.next_batch || null;
   }
 
   private async startSync() {
@@ -153,10 +162,15 @@ export class MatrixClient extends EventEmitter {
 
   private async saveSyncToken() {
     if (this.syncToken) {
-      await supabase.from('sync_status').insert({
-        next_batch: this.syncToken,
-        created_at: new Date().toISOString(),
-      });
+      const query = `
+        INSERT INTO sync_status (next_batch, created_at)
+        VALUES ($1, $2)
+      `;
+
+      await pgPool.query(query, [
+        this.syncToken,
+        new Date().toISOString()
+      ]);
     }
   }
 
@@ -174,7 +188,7 @@ export class MatrixClient extends EventEmitter {
   //         last_updated: new Date().toISOString(),
   //     };
 
-  //     await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
+  //     await pgPool.from('rooms').upsert(roomData, { onConflict: 'id' });
   // }
 
   private async processEvent(event: MatrixEvent) {
@@ -188,35 +202,49 @@ export class MatrixClient extends EventEmitter {
         content = decryptedEvent.getContent();
       }
 
-      const messageData = {
-        id: event.getId(),
-        room_id: event.getRoomId(),
-        sender: event.getSender(),
-        content: content.body,
-        msgtype: content.msgtype,
-        timestamp: event.getDate()?.toISOString(),
-        encrypted: event.isEncrypted(),
-        edited: false,
-        deleted: false,
-        created_at: new Date().toISOString(),
-      };
+      const query = `
+        INSERT INTO messages (
+          id, room_id, sender, content, msgtype,
+          timestamp, encrypted, edited, deleted, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO UPDATE SET
+          content = EXCLUDED.content,
+          edited = EXCLUDED.edited,
+          deleted = EXCLUDED.deleted
+      `;
 
-      await supabase.from('messages').upsert(messageData, { onConflict: 'id' });
+      await pgPool.query(query, [
+        event.getId(),
+        event.getRoomId(),
+        event.getSender(),
+        content.body,
+        content.msgtype,
+        event.getDate()?.toISOString(),
+        event.isEncrypted(),
+        false,
+        false,
+        new Date().toISOString()
+      ]);
     } catch (error: any) {
       console.error(`Failed to process event ${event.getId()}:`, error);
-      await supabase.from('failed_events').insert({
-        event_id: event.getId(),
-        room_id: event.getRoomId(),
-        error: error.message,
-        retry_count: 0,
-        created_at: new Date().toISOString(),
-      });
+      await pgPool.query(
+        `INSERT INTO failed_events (event_id, room_id, error, retry_count, created_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          event.getId(),
+          event.getRoomId(),
+          error.message,
+          0,
+          new Date().toISOString()
+        ]
+      );
     }
   }
 
   // private async handleDeviceVerification(userId: string, deviceId: string) {
   //     const device = await this.client.getDevice(deviceId) as IMyDevice;
-  //     await supabase.from('device_verifications').insert({
+  //     await pgPool.from('device_verifications').insert({
   //         user_id: userId,
   //         device_id: deviceId,
   //         display_name: device.display_name,
@@ -225,18 +253,33 @@ export class MatrixClient extends EventEmitter {
   // }
 
   private async handleKeyBackupStatus(status: boolean) {
-    await supabase.from('key_backup_status').insert({
+    const query = `
+      INSERT INTO key_backup_status (
+        status,
+        created_at
+      ) VALUES ($1, $2)
+    `;
+
+    await pgPool.query(query, [
       status,
-      created_at: new Date().toISOString(),
-    });
+      new Date().toISOString()
+    ]);
   }
 
   private async updateSyncStatus(state: string, data: any) {
-    await supabase.from('sync_status').insert({
+    const query = `
+      INSERT INTO sync_status (
+        state,
+        next_batch,
+        created_at
+      ) VALUES ($1, $2, $3)
+    `;
+
+    await pgPool.query(query, [
       state,
-      next_batch: data?.nextBatch,
-      created_at: new Date().toISOString(),
-    });
+      data?.nextBatch,
+      new Date().toISOString()
+    ]);
   }
 
   public getClient() {

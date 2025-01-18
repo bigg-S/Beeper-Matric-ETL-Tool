@@ -53,6 +53,6 @@
       }
     ]
   },
-  "include": ["**/*.ts", "**/*.tsx", "next-env.d.ts", ".next/types/**/*.ts"],
+  "include": ["**/*.ts", "**/*.tsx", "next-env.d.ts", ".next/types/**/*.ts", "src/server/matrix/tokens.js"],
   "exclude": ["node_modules", "dist", ".next", "coverage"]
 }

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { MatrixClient } from '../matrix/client';
 import { cryptoManager } from '../matrix/crypto';
 import { SyncManager } from '../matrix/sync';
-import { supabase } from '../db/client';
+import { pgPool } from '../db/client';
 import { z } from 'zod';
 import { authenticateRequest } from '../middlware/auth';
 import { KeyExportOptionsCustom } from '@/server/types';
@@ -28,8 +28,8 @@ router.post('/auth/login', async (req, res) => {
     const { username, password, domain } = loginSchema.parse(req.body);
     matrixClient = new MatrixClient({ username, password, domain });
     await matrixClient.initialize();
-    syncManager = new SyncManager(matrixClient.getClient());
-    await syncManager.startSync();
+    // syncManager = new SyncManager(matrixClient.getClient());
+    // await syncManager.startSync();
     res.json({ success: true });
   } catch (error: any) {
     console.error('Login error:', error);
@@ -96,12 +96,10 @@ router.post('/sync/stop', authenticateRequest, async (_req, res) => {
 // Data Routes
 router.get('/rooms', authenticateRequest, async (_req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('*')
-      .order('last_message_timestamp', { ascending: false });
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      'SELECT * FROM rooms ORDER BY last_message_timestamp DESC'
+    );
+    res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -114,13 +112,18 @@ router.get('/rooms/:roomId', authenticateRequest, async (req, res) => {
       res.status(400).json({ error: 'Room ID is required' });
       return;
     }
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('*, participants(*)')
-      .eq('room_id', roomId)
-      .single();
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      `SELECT r.*,
+        (SELECT json_agg(p.*) FROM participants p WHERE p.room_id = r.room_id) as participants
+       FROM rooms r
+       WHERE r.room_id = $1`,
+      [roomId]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Room not found' });
+      return;
+    }
+    res.json(result.rows[0]);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -135,20 +138,21 @@ router.get('/rooms/:roomId/messages', authenticateRequest, async (req, res) => {
       return;
     }
 
-    let query = supabase
-      .from('messages')
-      .select('*')
-      .eq('room_id', roomId)
-      .order('timestamp', { ascending: false })
-      .limit(Number(limit));
+    const params = [roomId, Number(limit)];
+    let query = `
+      SELECT * FROM messages
+      WHERE room_id = $1
+      ${before ? 'AND timestamp < $3' : ''}
+      ORDER BY timestamp DESC
+      LIMIT $2
+    `;
 
     if (before) {
-      query = query.lt('timestamp', before);
+      params.push(before as string);
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(query, params);
+    res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -156,9 +160,10 @@ router.get('/rooms/:roomId/messages', authenticateRequest, async (req, res) => {
 
 router.get('/users', authenticateRequest, async (_req, res) => {
   try {
-    const { data, error } = await supabase.from('users').select('*').order('display_name');
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      'SELECT * FROM users ORDER BY display_name'
+    );
+    res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -171,13 +176,20 @@ router.get('/users/:userId', authenticateRequest, async (req, res) => {
       res.status(400).json({ error: 'User ID is required' });
       return;
     }
-    const { data, error } = await supabase
-      .from('users')
-      .select('*, rooms(*)')
-      .eq('user_id', userId)
-      .single();
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      `SELECT u.*,
+        (SELECT json_agg(r.*) FROM rooms r
+         INNER JOIN participants p ON p.room_id = r.room_id
+         WHERE p.user_id = u.user_id) as rooms
+       FROM users u
+       WHERE u.user_id = $1`,
+      [userId]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json(result.rows[0]);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -255,20 +267,20 @@ router.post('/crypto/restore', authenticateRequest, async (req, res) => {
 // Stats Routes
 router.get('/stats', authenticateRequest, async (_req, res) => {
   try {
-    const [roomCount, messageCount, lastSync] = await Promise.all([
-      supabase.from('rooms').select('count'),
-      supabase.from('messages').select('count'),
-      supabase
-        .from('sync_status')
-        .select('last_sync')
-        .order('created_at', { ascending: false })
-        .limit(1),
-    ]);
+    const stats = await pgPool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM rooms) as total_rooms,
+        (SELECT COUNT(*) FROM messages) as total_messages,
+        (SELECT last_sync
+         FROM sync_status
+         ORDER BY created_at DESC
+         LIMIT 1) as last_sync
+    `);
 
     res.json({
-      totalRooms: roomCount.data?.[0]?.count || 0,
-      totalMessages: messageCount.data?.[0]?.count || 0,
-      lastSync: lastSync.data?.[0]?.last_sync,
+      totalRooms: parseInt(stats.rows[0].total_rooms),
+      totalMessages: parseInt(stats.rows[0].total_messages),
+      lastSync: stats.rows[0].last_sync
     });
   } catch (error: any) {
     handleError(res, error);
@@ -278,13 +290,11 @@ router.get('/stats', authenticateRequest, async (_req, res) => {
 router.get('/logs', authenticateRequest, async (req, res) => {
   try {
     const { limit = 100 } = req.query;
-    const { data, error } = await supabase
-      .from('logs')
-      .select('*')
-      .order('timestamp', { ascending: false })
-      .limit(Number(limit));
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      'SELECT * FROM logs ORDER BY timestamp DESC LIMIT $1',
+      [Number(limit)]
+    );
+    res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -293,9 +303,12 @@ router.get('/logs', authenticateRequest, async (req, res) => {
 // Config Routes
 router.get('/config', authenticateRequest, async (_req, res) => {
   try {
-    const { data, error } = await supabase.from('config').select('*').single();
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query('SELECT * FROM config LIMIT 1');
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Config not found' });
+      return;
+    }
+    res.json(result.rows[0]);
   } catch (error: any) {
     handleError(res, error);
   }
@@ -307,9 +320,11 @@ router.post('/config', authenticateRequest, async (req, res) => {
       res.status(400).json({ error: 'Request body is required' });
       return;
     }
-    const { data, error } = await supabase.from('config').upsert(req.body).single();
-    if (error) throw error;
-    res.json(data);
+    const result = await pgPool.query(
+      'INSERT INTO config ($1) VALUES ($2) ON CONFLICT DO UPDATE SET $1 = $2 RETURNING *',
+      [Object.keys(req.body), Object.values(req.body)]
+    );
+    res.json(result.rows[0]);
   } catch (error: any) {
     handleError(res, error);
   }

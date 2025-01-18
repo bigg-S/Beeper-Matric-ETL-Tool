@@ -59,7 +59,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
             try {
             const response = await fetch('/api/auth/me', {
                 headers: {
-                'Authorization': `Bearer ${auth.token}`
+                    'Authorization': `Bearer ${auth.token}`
                 }
             })
 

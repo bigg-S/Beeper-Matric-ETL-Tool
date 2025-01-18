@@ -1,49 +1,68 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import pg from 'pg';
 import { schema } from './schema';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-if (!process.env.SUPABASE_URL) {
-    throw new Error('Missing SUPABASE_URL environment variable');
-}
-if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY environment variable');
+if (!process.env.DATABASE_URL) {
+    throw new Error('Missing DATABASE_URL environment variable');
 }
 
-export const supabase: SupabaseClient = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    {
-        auth: {
-            autoRefreshToken: true,
-            persistSession: false,
-        },
-    }
-);
+const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 20,
+});
+
+export const pgPool = pool;
 
 export const initializeDatabase = async () => {
+    const client = await pool.connect();
     try {
-        await supabase.rpc('exec', {
-            query: `
-                BEGIN;
-                ${Object.values(schema).join(';\n')}
-                COMMIT;
-            `,
-        });
-        console.log("Database initialized or already up-to-date.");
+        await client.query('BEGIN');
+
+        const existingTablesResult = await client.query(`
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public';
+        `);
+        const existingTables = new Set(existingTablesResult.rows.map(row => row.table_name));
+
+        for (const [tableName, schemaSQL] of Object.entries(schema)) {
+            if (tableName === 'indexes') continue;
+
+            if (!existingTables.has(tableName)) {
+                await client.query(schemaSQL);
+                console.log(`Table ${tableName} created.`);
+            } else {
+                console.log(`Table ${tableName} already exists. Skipping creation.`);
+            }
+        }
+
+        if (schema.indexes) {
+            await client.query(schema.indexes);
+            console.log("Indexes created.");
+        }
+
+        await client.query('COMMIT');
+        console.log("Database initialized successfully.");
     } catch (error: any) {
+        await client.query('ROLLBACK');
         console.error('Failed to initialize database:', error);
         throw new Error(`Database initialization failed: ${error.message}`);
+    } finally {
+        client.release();
     }
 };
 
-export const tableExists = async (tableName: string): Promise<boolean> => {
-    try {
-        const { error } = await supabase.from(tableName).select('count').limit(0); // Limit 0 is more efficient
-        return !error;
-    } catch (error) {
-        console.error(`Error checking if table ${tableName} exists:`, error);
-        return false;
-    }
-};
+process.on('SIGINT', async () => {
+    console.log('Closing database pool...');
+    await pool.end();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('Closing database pool...');
+    await pool.end();
+    process.exit(0);
+});

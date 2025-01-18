@@ -4,6 +4,9 @@ import { MatrixConfig } from "../types";
 const API_BASE = process.env.API_URL || 'http://localhost:3001';
 
 class APIClient {
+  static getCryptoStatus() {
+    throw new Error('Method not implemented.');
+  }
   private static async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,

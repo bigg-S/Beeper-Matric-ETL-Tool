@@ -1,5 +1,5 @@
 import * as MatrixSDK from 'matrix-js-sdk';
-import { supabase } from '../db/client';
+import { pgPool } from '../db/client';
 import { RoomData, SyncManagerOptions, SyncStatus } from '../types';
 import { cryptoManager } from './crypto';
 import { MessageQueueImpl } from '@/server/types/message-queue';
@@ -73,15 +73,15 @@ export class SyncManager {
 
   private async loadSavedSync(): Promise<string | null> {
     try {
-      const { data, error } = await supabase
-        .from('sync_state')
-        .select('next_batch')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+      const query = `
+        SELECT next_batch
+        FROM sync_state
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
 
-      if (error) throw error;
-      return data?.next_batch || null;
+      const result = await pgPool.query(query);
+      return result.rows[0]?.next_batch || null;
     } catch (error) {
       console.warn('Failed to load saved sync token:', error);
       return null;
@@ -90,10 +90,14 @@ export class SyncManager {
 
   private async saveSyncToken(token: string): Promise<void> {
     try {
-      await supabase.from('sync_state').upsert({
-        next_batch: token,
-        created_at: new Date().toISOString(),
-      });
+      const query = `
+        INSERT INTO sync_state (next_batch, created_at)
+        VALUES ($1, $2)
+        ON CONFLICT (next_batch) DO UPDATE
+        SET created_at = EXCLUDED.created_at
+      `;
+
+      await pgPool.query(query, [token, new Date().toISOString()]);
     } catch (error) {
       console.error('Failed to save sync token:', error);
     }
@@ -143,43 +147,81 @@ export class SyncManager {
 
   private async syncRoom(room: MatrixSDK.Room): Promise<void> {
     const state = room.getLiveTimeline().getState(MatrixSDK.EventTimeline.FORWARDS);
-    const roomData: RoomData = {
+    const roomData = {
       id: room.roomId,
       name: room.name,
       topic: state?.getStateEvents('m.room.topic')[0]?.getContent()?.topic ?? '',
       is_encrypted: !!state?.getStateEvents(MatrixSDK.EventType.RoomEncryption, ''),
       created_ts: state?.getStateEvents('m.room.create', '')?.getTs(),
       avatar_url: state?.getStateEvents('m.room.avatar')[0]?.getContent()?.url ?? '',
-      last_updated: new Date().toISOString(),
+      last_updated: new Date().toISOString()
     };
 
-    const { error } = await supabase.from('rooms').upsert(roomData, { onConflict: 'id' });
+    const query = `
+      INSERT INTO rooms (
+        id, name, topic, is_encrypted, created_ts,
+        avatar_url, last_updated
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        topic = EXCLUDED.topic,
+        is_encrypted = EXCLUDED.is_encrypted,
+        avatar_url = EXCLUDED.avatar_url,
+        last_updated = EXCLUDED.last_updated
+    `;
 
-    if (error) throw new Error(`Failed to sync room: ${error.message}`);
+    try {
+      await pgPool.query(query, [
+        roomData.id,
+        roomData.name,
+        roomData.topic,
+        roomData.is_encrypted,
+        roomData.created_ts,
+        roomData.avatar_url,
+        roomData.last_updated
+      ]);
+    } catch (error: any) {
+      throw new Error(`Failed to sync room: ${error.message}`);
+    }
   }
 
   private async syncParticipants(room: MatrixSDK.Room): Promise<void> {
     const members = room.getJoinedMembers();
-
-    // Process members in batches
     const batchSize = 100;
+
     for (let i = 0; i < members.length; i += batchSize) {
       const batch = members.slice(i, i + batchSize);
-      const participantData = batch.map((member) => ({
-        user_id: member.userId,
-        display_name: member.name,
-        avatar_url: member.getMxcAvatarUrl() ?? '',
-        membership: member.membership,
-        room_id: room.roomId,
-        joined_ts: member.events.member?.getTs(),
-        last_updated: new Date().toISOString(),
-      }));
+      const query = `
+        INSERT INTO participants (
+          user_id, display_name, avatar_url, membership,
+          room_id, joined_ts, last_updated
+        )
+        VALUES
+          ${batch.map((_, index) =>
+            `($${index * 7 + 1}, $${index * 7 + 2}, $${index * 7 + 3}, $${index * 7 + 4}, $${index * 7 + 5}, $${index * 7 + 6}, $${index * 7 + 7})`
+          ).join(',')}
+        ON CONFLICT (user_id, room_id) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          avatar_url = EXCLUDED.avatar_url,
+          membership = EXCLUDED.membership,
+          last_updated = EXCLUDED.last_updated
+      `;
 
-      const { error } = await supabase
-        .from('participants')
-        .upsert(participantData, { onConflict: 'user_id, room_id' });
+      const values = batch.flatMap(member => [
+        member.userId,
+        member.name,
+        member.getMxcAvatarUrl() ?? '',
+        member.membership,
+        room.roomId,
+        member.events.member?.getTs(),
+        new Date().toISOString()
+      ]);
 
-      if (error) throw new Error(`Failed to sync participants batch: ${error.message}`);
+      try {
+        await pgPool.query(query, values);
+      } catch (error: any) {
+        throw new Error(`Failed to sync participants batch: ${error.message}`);
+      }
     }
   }
 
@@ -315,25 +357,37 @@ export class SyncManager {
   private async processMessageBatch(messages: any[] = []): Promise<void> {
     if (messages.length === 0) return;
 
-    const formattedMessages = messages.map((item) => ({
-      id: item.event.getId(),
-      room_id: item.room.roomId,
-      sender: item.event.getSender(),
-      content: item.event.content,
-      timestamp: item.event.getDate()?.toISOString(),
-      encrypted: item.event.isEncrypted(),
-      event_type: item.event.getType(),
-      processed_at: new Date().toISOString(),
-    }));
+    const query = `
+      INSERT INTO messages (
+        id, room_id, sender, content, timestamp,
+        encrypted, event_type, processed_at
+      )
+      VALUES
+        ${messages.map((_, index) =>
+          `($${index * 8 + 1}, $${index * 8 + 2}, $${index * 8 + 3}, $${index * 8 + 4}, $${index * 8 + 5}, $${index * 8 + 6}, $${index * 8 + 7}, $${index * 8 + 8})`
+        ).join(',')}
+      ON CONFLICT (id) DO UPDATE SET
+        content = EXCLUDED.content,
+        processed_at = EXCLUDED.processed_at
+    `;
 
-    const { error } = await supabase
-      .from('messages')
-      .upsert(formattedMessages, { onConflict: 'id' });
+    const values = messages.flatMap(item => [
+      item.event.getId(),
+      item.room.roomId,
+      item.event.getSender(),
+      item.event.content,
+      item.event.getDate()?.toISOString(),
+      item.event.isEncrypted(),
+      item.event.getType(),
+      new Date().toISOString()
+    ]);
 
-    if (error) {
+    try {
+      await pgPool.query(query, values);
+    } catch (error: any) {
       console.error(`Failed to store message batch: ${error.message}`);
       await Promise.all(
-        messages.map((msg) => this.messageQueue.enqueue({ ...msg, type: 'retry' }))
+        messages.map(msg => this.messageQueue.enqueue({ ...msg, type: 'retry' }))
       );
     }
   }
@@ -370,15 +424,27 @@ export class SyncManager {
   private async processErrorMessages(messages: any[] = []): Promise<void> {
     if (messages.length === 0) return;
 
-    // Log errors and store them for monitoring
-    const errorLogs = messages.map((item) => ({
-      event_id: item.event.getId(),
-      room_id: item.room.roomId,
-      error: item.error,
-      timestamp: new Date().toISOString(),
-    }));
+    const query = `
+      INSERT INTO sync_errors (
+        event_id, room_id, error, timestamp
+      )
+      VALUES
+        ${messages.map((_, index) =>
+          `($${index * 4 + 1}, $${index * 4 + 2}, $${index * 4 + 3}, $${index * 4 + 4})`
+        ).join(',')}
+      ON CONFLICT (event_id) DO UPDATE SET
+        error = EXCLUDED.error,
+        timestamp = EXCLUDED.timestamp
+    `;
 
-    await supabase.from('sync_errors').upsert(errorLogs, { onConflict: 'event_id' });
+    const values = messages.flatMap(item => [
+      item.event.getId(),
+      item.room.roomId,
+      item.error,
+      new Date().toISOString()
+    ]);
+
+    await pgPool.query(query, values);
   }
 
   private async handleSyncError(error: Error): Promise<void> {
@@ -403,11 +469,20 @@ export class SyncManager {
       error,
     };
 
-    await supabase.from('sync_status').upsert({
-      state: this.syncState.state,
-      last_sync: this.syncState.lastSync?.toISOString(),
-      error: this.syncState.error,
-    });
+    const query = `
+      INSERT INTO sync_status (
+        state, last_sync, error
+      ) VALUES ($1, $2, $3)
+      ON CONFLICT (state) DO UPDATE SET
+        last_sync = EXCLUDED.last_sync,
+        error = EXCLUDED.error
+    `;
+
+    await pgPool.query(query, [
+      this.syncState.state,
+      this.syncState.lastSync?.toISOString(),
+      this.syncState.error
+    ]);
   }
 
   private isRoomFullySynced(roomId: string): boolean {
@@ -603,55 +678,41 @@ export class SyncManager {
       timestamp: string;
     }>;
   }> {
-    const { data, error } = await supabase
-      .from('sync_errors')
-      .select('*')
-      .order('timestamp', { ascending: false })
-      .limit(100);
+    const query = `
+      SELECT * FROM sync_errors
+      ORDER BY timestamp DESC
+      LIMIT 100
+    `;
 
-    if (error) throw error;
-
-    return {
-      count: data.length,
-      errors: data.map((error) => ({
-        roomId: error.room_id,
-        eventId: error.event_id,
-        error: error.error,
-        timestamp: error.timestamp,
-      })),
-    };
+    try {
+      const result = await pgPool.query(query);
+      return {
+        count: result.rows.length,
+        errors: result.rows.map(error => ({
+          roomId: error.room_id,
+          eventId: error.event_id,
+          error: error.error,
+          timestamp: error.timestamp
+        }))
+      };
+    } catch (error: any) {
+      throw error;
+    }
   }
 
   async clearFailedMessages(): Promise<void> {
-    await supabase.from('sync_errors').delete().neq('event_id', '');
-  }
-
-  async retryFailedDecryption(roomId?: string): Promise<number> {
-    const pendingEvents = await this.messageQueue.getPending('retry_decrypt');
-    const eventsToRetry = roomId
-      ? pendingEvents.filter((event) => event.room.roomId === roomId)
-      : pendingEvents;
-
-    await this.processRetryDecryption(eventsToRetry);
-    return eventsToRetry.length;
+    await pgPool.query('DELETE FROM sync_errors');
   }
 
   async resetSync(): Promise<void> {
     try {
-      // Stop current sync
       await this.stopSync();
-
-      // Clear sync state
       this.lastSyncToken = null;
-      await supabase.from('sync_state').delete().neq('next_batch', '');
 
-      // Clear message queue
+      await pgPool.query('DELETE FROM sync_state');
       await this.messageQueue.clear();
-
-      // Clear error logs
       await this.clearFailedMessages();
 
-      // Start fresh sync
       await this.startSync();
     } catch (error: any) {
       await this.handleSyncError(error);
@@ -673,46 +734,53 @@ export class SyncManager {
       throw new Error('Room not found');
     }
 
+    const countQuery = `
+      SELECT COUNT(*) as count
+      FROM messages
+      WHERE room_id = $1
+    `;
+
+    const lastMessageQuery = `
+      SELECT timestamp, sender
+      FROM messages
+      WHERE room_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+
     const timeline = room.getLiveTimeline();
     const isFullySynced = this.isRoomFullySynced(roomId);
 
-    const { count } = await supabase
-      .from('messages')
-      .select('*', { count: 'exact', head: true })
-      .eq('room_id', roomId);
+    try {
+      const [countResult, lastMessageResult] = await Promise.all([
+        pgPool.query(countQuery, [roomId]),
+        pgPool.query(lastMessageQuery, [roomId])
+      ]);
 
-    const { data: lastMessage } = await supabase
-      .from('messages')
-      .select('timestamp, sender')
-      .eq('room_id', roomId)
-      .order('timestamp', { ascending: false })
-      .limit(1)
-      .single();
+      let status: 'synced' | 'syncing' | 'failed' = 'failed';
+      let progress = 0;
 
-    let status: 'synced' | 'syncing' | 'failed' = 'failed';
-    let progress = 0;
+      if (isFullySynced) {
+        status = 'synced';
+        progress = 100;
+      } else if (timeline && timeline.getPaginationToken(MatrixSDK.EventTimeline.BACKWARDS)) {
+        status = 'syncing';
+        const timelineEvents = timeline.getEvents().length;
+        const totalEvents = room.getUnfilteredTimelineSet().getLiveTimeline().getEvents().length;
+        progress = Math.min(Math.round((timelineEvents / totalEvents) * 100), 99);
+      }
 
-    if (isFullySynced) {
-      status = 'synced';
-      progress = 100;
-    } else if (timeline && timeline.getPaginationToken(MatrixSDK.EventTimeline.BACKWARDS)) {
-      status = 'syncing';
-      // estimate progress based on timeline events vs total known events
-      const timelineEvents = timeline.getEvents().length;
-      const totalEvents = room.getUnfilteredTimelineSet().getLiveTimeline().getEvents().length;
-      progress = Math.min(Math.round((timelineEvents / totalEvents) * 100), 99);
+      return {
+        status,
+        progress,
+        messageCount: parseInt(countResult.rows[0].count) || 0,
+        lastMessage: lastMessageResult.rows[0] ? {
+          timestamp: lastMessageResult.rows[0].timestamp,
+          sender: lastMessageResult.rows[0].sender
+        } : undefined
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to get room sync progress: ${error.message}`);
     }
-
-    return {
-      status,
-      progress,
-      messageCount: count || 0,
-      lastMessage: lastMessage
-        ? {
-            timestamp: lastMessage.timestamp,
-            sender: lastMessage.sender,
-          }
-        : undefined,
-    };
   }
 }

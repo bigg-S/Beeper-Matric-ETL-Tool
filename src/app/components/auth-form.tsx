@@ -1,117 +1,190 @@
-'use client'
+import React, { useState } from 'react';
+import {
+  Card,
+  CardHeader,
+  CardBody,
+  Input,
+  Button,
+  Progress,
+} from '@nextui-org/react';
+import { LoginCredentials } from '../types';
+import APIClient from '../lib/api';
 
-import { useState } from 'react'
-import { Card, CardHeader, CardBody, Input, Button } from '@nextui-org/react'
-import { useApp } from '../providers'
-import { LoginCredentials } from '../types'
-import APIClient from '../lib/api'
+const AuthForm = () => {
+  const [formState, setFormState] = useState<{
+    credentials: LoginCredentials;
+    status: 'idle' | 'authenticating' | 'loading-keys' | 'syncing' | 'error' | 'success';
+    error: string | null;
+  }>({
+    credentials: {
+      username: '',
+      password: '',
+      domain: 'matrix.beeper.com'
+    },
+    status: 'idle',
+    error: null
+  });
 
-export function AuthForm() {
-    const { setAuth } = useApp()
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
-    const [formData, setFormData] = useState<LoginCredentials>({
-        username: '',
-        password: '',
-        domain: 'beeper.com'
-    })
+  const validateForm = () => {
+    if (!formState.credentials.username) return 'Username is required';
+    if (!formState.credentials.password) return 'Password is required';
+    if (!formState.credentials.domain) return 'Domain is required';
 
-    const validateDomain = (domain: string): boolean => {
-        try {
-            new URL(`https://${domain}`)
-            return true
-        } catch {
-            return false
-        }
+    try {
+      new URL(`https://${formState.credentials.domain}`);
+    } catch {
+      return 'Please enter a valid domain';
     }
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault()
-        setLoading(true)
-        setError(null)
+    return null;
+  };
 
-        if (!validateDomain(formData.domain)) {
-            setError('Please enter a valid domain')
-            setLoading(false)
-            return
-        }
-
-        try {
-            const response = await APIClient.login({
-                username: formData.username,
-                password: formData.password,
-                domain: `https://${formData.domain}`
-            })
-
-            if (response.data.success) {
-                setAuth({
-                    isAuthenticated: true,
-                    token: response.data.token,
-                })
-
-                try {
-                    const userData = await APIClient.get_user()
-                    console.log("User data: ", userData)
-                    // Handle user data as needed
-                } catch (userError) {
-                    console.error('Error fetching user data:', userError)
-                }
-            }
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Authentication failed')
-        } finally {
-            setLoading(false)
-        }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const validationError = validateForm();
+    if (validationError) {
+      setFormState(prev => ({ ...prev, error: validationError }));
+      return;
     }
 
-    return (
-        <Card className="max-w-md w-full">
-            <CardHeader className="flex flex-col gap-3">
-                <h1 className="text-2xl font-bold">Matrix ETL Pipeline</h1>
-                <p className="text-default-500">Login with your Matrix credentials</p>
-            </CardHeader>
-            <CardBody>
-                <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-                    <Input
-                        label="Matrix Username"
-                        placeholder="@username"
-                        value={formData.username}
-                        onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                        isRequired
-                        isInvalid={Boolean(error)}
-                    />
-                    <Input
-                        label="Password"
-                        type="password"
-                        placeholder="Enter your password"
-                        value={formData.password}
-                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                        isRequired
-                        isInvalid={Boolean(error)}
-                    />
-                    <Input
-                        label="Matrix Domain"
-                        placeholder="beeper.com"
-                        value={formData.domain}
-                        onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
-                        isRequired
-                        isInvalid={Boolean(error)}
-                    />
-                    {error && (
-                        <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">
-                            {error}
-                        </div>
-                    )}
-                    <Button
-                        color="primary"
-                        type="submit"
-                        isLoading={loading}
-                        className="mt-2"
-                    >
-                        {loading ? 'Authenticating...' : 'Login'}
-                    </Button>
-                </form>
-            </CardBody>
-        </Card>
-    )
-}
+    try {
+      setFormState(prev => ({ ...prev, status: 'authenticating', error: null }));
+
+      const loginResponse = await APIClient.login({
+        username: formState.credentials.username,
+        password: formState.credentials.password,
+        domain: `https://${formState.credentials.domain}`
+      });
+
+      if (!loginResponse.data.success) {
+        throw new Error('Authentication failed');
+      }
+
+      setFormState(prev => ({ ...prev, status: 'loading-keys' }));
+
+      // Poll for crypto initialization status
+      // const checkCryptoStatus = async () => {
+      //   try {
+      //     const status = APIClient.getCryptoStatus();
+      //     if (status.) {
+      //       setFormState(prev => ({ ...prev, status: 'syncing' }));
+      //       const userData = await APIClient.get_user();
+      //       if (userData.success) {
+      //         setFormState(prev => ({ ...prev, status: 'success' }));
+      //       }
+      //     } else {
+      //       setTimeout(checkCryptoStatus, 1000);
+      //     }
+      //   } catch (error) {
+      //     setFormState(prev => ({
+      //       ...prev,
+      //       status: 'error',
+      //       error: 'Failed to initialize E2E encryption'
+      //     }));
+      //   }
+      // };
+
+      // checkCryptoStatus();
+
+    } catch (error) {
+      setFormState(prev => ({
+        ...prev,
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Authentication failed'
+      }));
+    }
+  };
+
+  const getStatusMessage = () => {
+    switch (formState.status) {
+      case 'authenticating':
+        return 'Authenticating...';
+      case 'loading-keys':
+        return 'Loading E2E encryption keys...';
+      case 'syncing':
+        return 'Syncing with Matrix server...';
+      case 'success':
+        return 'Successfully connected!';
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <Card className="max-w-md w-full">
+      <CardHeader className="flex flex-col gap-3">
+        <h1 className="text-2xl font-bold">Matrix ETL Pipeline</h1>
+        <p className="text-default-500">Connect your Matrix account to start syncing</p>
+      </CardHeader>
+      <CardBody>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Input
+            label="Matrix Client Username"
+            placeholder="Enter your Matrix Client Username"
+            value={formState.credentials.username}
+            onChange={(e) => setFormState(prev => ({
+              ...prev,
+              credentials: { ...prev.credentials, username: e.target.value }
+            }))}
+            isRequired
+            isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
+          />
+          <Input
+            label="Matrix Client Password"
+            type="password"
+            placeholder="Enter your password"
+            value={formState.credentials.password}
+            onChange={(e) => setFormState(prev => ({
+              ...prev,
+              credentials: { ...prev.credentials, password: e.target.value }
+            }))}
+            isRequired
+            isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
+          />
+          <Input
+            label="Matrix Client Domain"
+            placeholder="beeper.com"
+            value={formState.credentials.domain}
+            onChange={(e) => setFormState(prev => ({
+              ...prev,
+              credentials: { ...prev.credentials, domain: e.target.value }
+            }))}
+            isRequired
+            isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
+          />
+
+          {formState.error && (
+            <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">
+              {formState.error}
+            </div>
+          )}
+
+          {formState.status !== 'idle' && formState.status !== 'error' && (
+            <div className="flex flex-col gap-2">
+              <Progress
+                size="sm"
+                isIndeterminate
+                aria-label="Loading..."
+                className="max-w-md"
+              />
+              <p className="text-small text-default-500 text-center">
+                {getStatusMessage()}
+              </p>
+            </div>
+          )}
+
+          <Button
+            color="primary"
+            type="submit"
+            isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
+            isLoading={formState.status !== 'idle' && formState.status !== 'error'}
+          >
+            {formState.status === 'idle' || formState.status === 'error' ? 'Connect' : 'Connecting...'}
+          </Button>
+        </form>
+      </CardBody>
+    </Card>
+  );
+};
+
+export default AuthForm;
