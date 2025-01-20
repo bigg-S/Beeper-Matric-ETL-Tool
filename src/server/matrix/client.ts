@@ -17,10 +17,8 @@ export class MatrixClient extends EventEmitter {
     super();
     this.authConfig = authConfig;
     this.client = MatrixSDK.createClient({
-      baseUrl: `https://${authConfig.domain}`,
-      accessToken: process.env.MATRIX_ACCESS_TOKEN,
-      refreshToken: process.env.MATRIX_REFRESH_TOKEN,
-      userId: `@${authConfig.username}:${authConfig.domain}`
+      baseUrl: authConfig.domain,
+      userId: `@${authConfig.username}:${authConfig.domain}`,
     });
   }
 
@@ -37,12 +35,20 @@ export class MatrixClient extends EventEmitter {
         user: this.authConfig.username,
         password: this.authConfig.password,
       });
+      const existingCredentials = await this.getExistingCredentials();
+
+      if (existingCredentials) {
+        this.client.deviceId = existingCredentials.device_id;
+        this.client.setAccessToken(existingCredentials.access_token);
+        this.client.credentials = { userId: this.client.getUserId() };
+        console.log("User logged in using existing credentials.");
+        return;
+      }
 
       const query = `
-        INSERT INTO device_credentials (
-          user_id, device_id, access_token, refresh_token,
-          expires_in_ms, well_known, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO auth_credentials (
+          user_id, device_id, access_token, refresh_token, domain, homeserver_url, expires_in_ms, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `;
 
       await pgPool.query(query, [
@@ -50,11 +56,19 @@ export class MatrixClient extends EventEmitter {
         loginResponse.device_id,
         loginResponse.access_token,
         loginResponse.refresh_token,
+        this.authConfig.domain,
+        this.client.getUserId()?.split(":")[1],
         loginResponse.expires_in_ms,
-        loginResponse.well_known,
         new Date().toISOString()
       ]);
+
+      this.client.deviceId = loginResponse.device_id;
+      this.client.setAccessToken(loginResponse.access_token);
+      this.client.credentials = { userId: this.client.getUserId()}
+
+      console.log("User logged in and credentials saved.", this.client.getUserId());
     } catch (error: any) {
+      console.error(`Failed to login:`, error);
       throw new Error(`Failed to login: ${error.message}`);
     }
   }
@@ -95,7 +109,7 @@ export class MatrixClient extends EventEmitter {
   }
 
   private async setupCrypto() {
-    await cryptoManager.initCrypto(this.client);
+    await cryptoManager.initCrypto(this.client, this.authConfig.password);
 
     await this.client.initRustCrypto();
 
@@ -116,6 +130,23 @@ export class MatrixClient extends EventEmitter {
     this.client.on(MatrixSDK.Crypto.CryptoEvent.KeyBackupStatus, async (status) => {
       await this.handleKeyBackupStatus(status);
     });
+  }
+
+  private async getExistingCredentials() {
+    try {
+      const result = await pgPool.query(
+        'SELECT device_id, access_token FROM auth_credentials WHERE user_id = $1',
+        [this.client.getUserId()]
+      );
+      if (result.rows.length > 0) {
+        return result.rows[0];
+      } else {
+        return null;
+      }
+    } catch (error) {
+      console.error("Error fetching credentials:", error);
+      return null;
+    }
   }
 
   private async loadSyncToken() {

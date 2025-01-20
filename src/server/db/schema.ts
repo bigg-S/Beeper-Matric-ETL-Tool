@@ -3,9 +3,9 @@ export const schema = {
         CREATE TABLE IF NOT EXISTS auth_credentials (
             user_id TEXT PRIMARY KEY,
             access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
             device_id TEXT NOT NULL,
             domain TEXT NOT NULL,
-            last_verified TIMESTAMP WITH TIME ZONE NOT NULL,
             homeserver_url TEXT NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
