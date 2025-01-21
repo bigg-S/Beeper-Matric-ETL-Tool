@@ -152,22 +152,22 @@ export class MatrixClient extends EventEmitter {
       throw new Error("Client not created");
     }
 
-    await cryptoManager.initCrypto(this.client, this.authConfig.password);
+    await cryptoManager.initCrypto(this.client, this.userId, this.client.deviceId ?? "", this.authConfig.password);
 
+    // initialize end to end encryption
     await this.client.initRustCrypto();
 
     const cryptoApi = this.client.getCrypto();
     if (cryptoApi) {
-      const keyBackupInfo = await cryptoApi.getKeyBackupInfo();
-      console.log(keyBackupInfo)
-      if (!keyBackupInfo) {
-        console.log("No backup info: checking and enabling...")
-        await cryptoApi.checkKeyBackupAndEnable();
+      const hasKeyBackup = (await cryptoApi.checkKeyBackupAndEnable()) !== null;
+      if (hasKeyBackup == null) {
+        // create a new key backup
+        await cryptoApi.resetKeyBackup();
       }
     }
 
-    console.log("here authuploading device signing keys")
-    this.client.getCrypto()?.bootstrapCrossSigning({
+    // verify new devices
+    cryptoApi?.bootstrapCrossSigning({
       authUploadDeviceSigningKeys: async (makeRequest) => {
         return makeRequest(this.authConfig).then(() => {});
       },
@@ -198,7 +198,7 @@ export class MatrixClient extends EventEmitter {
   private async loadSyncToken() {
     const query = `
       SELECT next_batch
-      FROM sync_status
+      FROM sync_state
       ORDER BY created_at DESC
       LIMIT 1
     `;
@@ -212,7 +212,7 @@ export class MatrixClient extends EventEmitter {
       throw new Error("Client not created");
     }
 
-    const filterDef = new MatrixSDK.Filter(this.client.getUserId()!);
+    const filterDef = new MatrixSDK.Filter(this.userId!);
     filterDef.setTimelineLimit(50);
     filterDef.setDefinition({
       room: {
@@ -244,7 +244,7 @@ export class MatrixClient extends EventEmitter {
   private async saveSyncToken() {
     if (this.syncToken) {
       const query = `
-        INSERT INTO sync_status (next_batch, created_at)
+        INSERT INTO sync_state (next_batch, created_at)
         VALUES ($1, $2)
       `;
 
@@ -349,7 +349,7 @@ export class MatrixClient extends EventEmitter {
 
   private async updateSyncStatus(state: string, data: any) {
     const query = `
-      INSERT INTO sync_status (
+      INSERT INTO sync_state (
         state,
         next_batch,
         created_at

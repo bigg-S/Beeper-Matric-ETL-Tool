@@ -24,11 +24,13 @@ class APIClient {
     return response.json();
   }
 
-  static async login(config: MatrixConfig): Promise<{data: LoginResponse}> {
-    return this.request('/api/auth/login', {
+  static async login(config: MatrixConfig): Promise<LoginResponse> {
+    const response =  await this.request('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify(config),
-    });
+    }) as LoginResponse;
+
+    return response;
   }
 
   static async logout(): Promise<{ success: boolean }> {

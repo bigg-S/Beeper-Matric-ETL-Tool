@@ -56,7 +56,9 @@ const AuthForm = () => {
         domain: `https://${formState.credentials.domain}`
       });
 
-      if (!loginResponse.data.success) {
+      console.log(loginResponse);
+
+      if (!loginResponse.success) {
         throw new Error('Authentication failed');
       }
 

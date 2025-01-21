@@ -105,7 +105,7 @@ export class SyncManager {
 
   async startSync(): Promise<void> {
     try {
-      if (!cryptoManager.getStatus().initialized) {
+      if (!cryptoManager.getDetailedStatus()) {
         throw new Error('Crypto manager must be initialized before starting sync');
       }
 

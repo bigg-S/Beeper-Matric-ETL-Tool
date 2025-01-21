@@ -133,33 +133,33 @@ export class CryptoManager {
     return [keyId, derivedKey.rawKey];
   };
 
-  async initCrypto(client: MatrixSDK.MatrixClient, passphrase?: string): Promise<void> {
+  async initCrypto(client: MatrixSDK.MatrixClient, userId: string, deviceId: string, passphrase?: string): Promise<void> {
     try {
-      const userId = new UserId(client.getUserId() || '');
-      const deviceId = new DeviceId(client.getDeviceId() || '');
+      const _userId = new UserId(userId);
+      const _deviceId = new DeviceId(deviceId);
 
       if (!userId || !deviceId) {
         throw new Error('Invalid User ID or Device ID');
       }
 
       this.client = client;
-      this.crypto = await OlmMachine.initialize(userId, deviceId, this.storePath, passphrase);
+      if(!this.crypto) {
+        console.log("crypto not initialized")
+        this.crypto = await OlmMachine.initialize(_userId, _deviceId, this.storePath, passphrase);
+      }
 
       // Set up crypto callbacks
-      client.cryptoCallbacks = {
+      this.client.cryptoCallbacks = {
         getSecretStorageKey: this.getSecretStorageKey.bind(this),
       };
 
-      // Set up device verification handling
-      client.on(MatrixSDK.Crypto.CryptoEvent.VerificationRequestReceived, (request) => {
-        const otherUserId = request.otherUserId;
-        const otherDeviceId = request.otherDeviceId;
 
-        if (otherUserId && otherDeviceId) {
-          this.handleDeviceVerificationChanged(otherUserId, otherDeviceId, request);
-        } else {
-          console.warn('Verification request received without other user/device ID', request);
-        }
+      this.client.getCrypto()?.bootstrapSecretStorage({
+        // This function will be called if a new secret storage key (aka recovery key) is needed.
+        // You should prompt the user to save the key somewhere, because they will need it to unlock secret storage in future.
+        createSecretStorageKey: async () => {
+            return this.getSecretStorageKey;
+        },
       });
 
       if (passphrase) {
@@ -415,15 +415,6 @@ export class CryptoManager {
         enabled: true,
         lastBackup: new Date().toISOString(),
       };
-
-      // const keyStatus = await this.client.getCrypto()?.getSessionBackupPrivateKey();
-      // if (keyStatus) {
-      //     const sessions = await this.client.getK;
-      //     if (sessions) {
-      //         this.status.keysStatus.totalKeys = sessions.total || 0;
-      //         this.status.keysStatus.backedUpKeys = sessions.backed_up || 0;
-      //     }
-      // }
     } catch (error) {
       console.error('Failed to recover keys:', error);
       if (error instanceof CryptoError) {
@@ -504,24 +495,6 @@ export class CryptoManager {
     }
   }
 
-  private async handleDeviceVerificationChanged(
-    userId: string,
-    deviceId: string,
-    request: MatrixSDK.Crypto.VerificationRequest
-  ): Promise<void> {
-    try {
-      if (this.crypto) {
-        console.log(`Device verification changed for user: ${userId}, device: ${deviceId}`);
-        request.startVerification('m.sas.v1');
-        // TODO: impl appropriate handle logic
-      } else {
-        console.warn('Crypto not initialized, unable to handle device verification change.');
-      }
-    } catch (error) {
-      console.error('Failed to update device trust:', error);
-    }
-  }
-
   async encryptEvent(roomId: string, eventType: string, content: any): Promise<any> {
     if (!this.crypto) {
       throw new Error('Crypto is not initialized');
@@ -555,10 +528,6 @@ export class CryptoManager {
     }
   }
 
-  getStatus(): CryptoStatus {
-    return this.status;
-  }
-
   async getDetailedStatus(): Promise<
     CryptoStatus & {
       deviceVerification: {
@@ -570,7 +539,7 @@ export class CryptoManager {
       };
     }
   > {
-    const basicStatus = this.getStatus();
+    const basicStatus = this.status;
     const crypto = this.client?.getCrypto();
 
     if (!crypto) {
@@ -605,7 +574,3 @@ export class CryptoManager {
 }
 
 export const cryptoManager = new CryptoManager();
-
-export const initCrypto = async (client: MatrixSDK.MatrixClient): Promise<void> => {
-  await cryptoManager.initCrypto(client);
-};
