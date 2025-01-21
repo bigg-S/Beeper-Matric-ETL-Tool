@@ -151,7 +151,7 @@ export class MatrixClient extends EventEmitter {
     if (!this.client) {
       throw new Error("Client not created");
     }
-    
+
     await cryptoManager.initCrypto(this.client, this.authConfig.password);
 
     await this.client.initRustCrypto();
