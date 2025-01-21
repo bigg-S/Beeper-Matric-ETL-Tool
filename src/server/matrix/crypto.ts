@@ -135,9 +135,8 @@ export class CryptoManager {
 
   async initCrypto(client: MatrixSDK.MatrixClient, passphrase?: string): Promise<void> {
     try {
-      const id = client.getUserId();
+      const userId = new UserId(client.getUserId() || '');
       const deviceId = new DeviceId(client.getDeviceId() || '');
-      const userId = new UserId(`${id}:${deviceId.toString()}` || '');
 
       if (!userId || !deviceId) {
         throw new Error('Invalid User ID or Device ID');
@@ -145,8 +144,6 @@ export class CryptoManager {
 
       this.client = client;
       this.crypto = await OlmMachine.initialize(userId, deviceId, this.storePath, passphrase);
-
-      console.log(userId.toString(), deviceId.toString())
 
       // Set up crypto callbacks
       client.cryptoCallbacks = {

@@ -13,7 +13,7 @@ export const schema = {
 
     sync_state: `
         CREATE TABLE IF NOT EXISTS sync_state (
-            id SERIAL PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             next_batch TEXT NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             state TEXT NOT NULL,
@@ -23,7 +23,7 @@ export const schema = {
 
     sync_chunks: `
         CREATE TABLE IF NOT EXISTS sync_chunks (
-            id TEXT PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             sync_token TEXT NOT NULL,
             chunk_index INTEGER NOT NULL,
             total_chunks INTEGER NOT NULL,
@@ -37,7 +37,7 @@ export const schema = {
 
     rooms: `
         CREATE TABLE IF NOT EXISTS rooms (
-            id TEXT PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             name TEXT,
             topic TEXT,
             is_encrypted BOOLEAN NOT NULL DEFAULT false,
@@ -71,7 +71,7 @@ export const schema = {
 
     messages: `
         CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             room_id TEXT NOT NULL,
             sender TEXT NOT NULL,
             content JSONB NOT NULL,
@@ -91,7 +91,7 @@ export const schema = {
 
     sync_errors: `
         CREATE TABLE IF NOT EXISTS sync_errors (
-            id SERIAL PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             event_id TEXT NOT NULL,
             room_id TEXT NOT NULL,
             error TEXT NOT NULL,
@@ -105,10 +105,18 @@ export const schema = {
 
     sync_status: `
         CREATE TABLE IF NOT EXISTS sync_status (
-            id SERIAL PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             state TEXT NOT NULL,
             last_sync TIMESTAMP WITH TIME ZONE,
             error TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    `,
+
+    key_backup_status: `
+        CREATE TABLE IF NOT EXISTS key_backup_status (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            status BOOLEAN DEFAULT false,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
     `,

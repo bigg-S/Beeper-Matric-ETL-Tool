@@ -9,32 +9,58 @@ import { UserPayload } from '../types';
 dotenv.config();
 
 export class MatrixClient extends EventEmitter {
-  private client: MatrixSDK.MatrixClient;
+  private client: MatrixSDK.MatrixClient | null | undefined;
   private authConfig: UserPayload;
   private syncToken: string | null = null;
+  private userId: string = "";
+  private isInitialized = false;
 
   constructor(authConfig: UserPayload) {
     super();
     this.authConfig = authConfig;
-    this.client = MatrixSDK.createClient({
-      baseUrl: authConfig.domain,
-      userId: `@${authConfig.username}:${authConfig.domain}`,
-    });
   }
 
-  async initialize() {
-    await this.login();
-    await this.setupCrypto();
-    await this.loadSyncToken();
-    await this.startSync();
+  async initialize(): Promise<void> {
+    if (this.isInitialized) {
+      console.log("Matrix client already initialized.");
+      return;
+    }
+
+    try {
+      this.client = MatrixSDK.createClient({
+        baseUrl: this.authConfig.domain,
+        userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
+      });
+
+      await this.login();
+
+      await this.setupCrypto();
+
+      await this.loadSyncToken();
+
+      await this.startSync();
+
+      this.isInitialized = true;
+      console.log("Matrix client fully initialized.");
+
+    } catch (error) {
+      console.error("Failed to initialize Matrix client:", error);
+      this.client = null;
+      throw error;
+    }
+  }
+
+  public isClientInitialized(): boolean {
+    return this.isInitialized;
   }
 
   private async login() {
+    if (!this.client) {
+      throw new Error("Client not created");
+    }
+
     try {
-      const loginResponse = await this.client.login('m.login.password', {
-        user: this.authConfig.username,
-        password: this.authConfig.password,
-      });
+      this.userId = this.client.getUserId()?.replace(/^(.+?):https:\/\/matrix\.(.+)$/, '$1:$2') || "";
       const existingCredentials = await this.getExistingCredentials();
 
       if (existingCredentials) {
@@ -44,6 +70,11 @@ export class MatrixClient extends EventEmitter {
         console.log("User logged in using existing credentials.");
         return;
       }
+
+      const loginResponse = await this.client.login('m.login.password', {
+        user: this.authConfig.username,
+        password: this.authConfig.password,
+      });
 
       const query = `
         INSERT INTO auth_credentials (
@@ -64,7 +95,7 @@ export class MatrixClient extends EventEmitter {
 
       this.client.deviceId = loginResponse.device_id;
       this.client.setAccessToken(loginResponse.access_token);
-      this.client.credentials = { userId: this.client.getUserId()}
+      this.client.credentials = { userId: this.client.getUserId() };
 
       console.log("User logged in and credentials saved.", this.client.getUserId());
     } catch (error: any) {
@@ -74,6 +105,10 @@ export class MatrixClient extends EventEmitter {
   }
 
   public async logout() {
+    if (!this.client) {
+      throw new Error("Client not created");
+    }
+
     try {
       await this.client.logout();
       this.syncToken = null;
@@ -81,7 +116,7 @@ export class MatrixClient extends EventEmitter {
       const userId = this.client.getUserId();
       if (userId) {
         await pgPool.query(
-          'DELETE FROM device_credentials WHERE user_id = $1',
+          'DELETE FROM auth_credentials WHERE user_id = $1',
           [userId]
         );
       }
@@ -95,6 +130,10 @@ export class MatrixClient extends EventEmitter {
   }
 
   public async getUserProfile(userId: string) {
+    if (!this.client) {
+      throw new Error("Client not created");
+    }
+
     try {
       const displayName = await this.client.getProfileInfo(userId, 'displayname');
       const avatarUrl = await this.client.getProfileInfo(userId, 'avatar_url');
@@ -109,6 +148,10 @@ export class MatrixClient extends EventEmitter {
   }
 
   private async setupCrypto() {
+    if (!this.client) {
+      throw new Error("Client not created");
+    }
+    
     await cryptoManager.initCrypto(this.client, this.authConfig.password);
 
     await this.client.initRustCrypto();
@@ -116,11 +159,14 @@ export class MatrixClient extends EventEmitter {
     const cryptoApi = this.client.getCrypto();
     if (cryptoApi) {
       const keyBackupInfo = await cryptoApi.getKeyBackupInfo();
+      console.log(keyBackupInfo)
       if (!keyBackupInfo) {
+        console.log("No backup info: checking and enabling...")
         await cryptoApi.checkKeyBackupAndEnable();
       }
     }
 
+    console.log("here authuploading device signing keys")
     this.client.getCrypto()?.bootstrapCrossSigning({
       authUploadDeviceSigningKeys: async (makeRequest) => {
         return makeRequest(this.authConfig).then(() => {});
@@ -136,7 +182,7 @@ export class MatrixClient extends EventEmitter {
     try {
       const result = await pgPool.query(
         'SELECT device_id, access_token FROM auth_credentials WHERE user_id = $1',
-        [this.client.getUserId()]
+        [this.userId]
       );
       if (result.rows.length > 0) {
         return result.rows[0];
@@ -162,6 +208,10 @@ export class MatrixClient extends EventEmitter {
   }
 
   private async startSync() {
+    if (!this.client) {
+      throw new Error("Client not created");
+    }
+
     const filterDef = new MatrixSDK.Filter(this.client.getUserId()!);
     filterDef.setTimelineLimit(50);
     filterDef.setDefinition({
