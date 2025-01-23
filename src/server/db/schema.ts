@@ -1,7 +1,8 @@
 export const schema = {
     auth_credentials: `
         CREATE TABLE IF NOT EXISTS auth_credentials (
-            user_id TEXT PRIMARY KEY,
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id TEXT NOT NULL,
             access_token TEXT NOT NULL,
             refresh_token TEXT NOT NULL,
             device_id TEXT NOT NULL,
@@ -15,9 +16,10 @@ export const schema = {
         CREATE TABLE IF NOT EXISTS sync_state (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             next_batch TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             state TEXT NOT NULL,
-            error TEXT
+            sync_data JSONB,
+            error TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
     `,
 
@@ -72,15 +74,14 @@ export const schema = {
     messages: `
         CREATE TABLE IF NOT EXISTS messages (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            event_id TEXT NOT NULL,
             room_id TEXT NOT NULL,
             sender TEXT NOT NULL,
             content JSONB NOT NULL,
-            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-            encrypted BOOLEAN NOT NULL DEFAULT false,
-            decrypted BOOLEAN NOT NULL DEFAULT false,
             event_type TEXT NOT NULL,
-            relates_to TEXT,
-            thread_root TEXT,
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+            is_encrypted BOOLEAN NOT NULL DEFAULT false,
+            relates_to JSONB,
             processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             error TEXT,
             FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,

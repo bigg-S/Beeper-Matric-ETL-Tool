@@ -1,23 +1,35 @@
+import { StoredSyncData } from './../types/index';
 import * as MatrixSDK from 'matrix-js-sdk';
-import { MatrixEvent, PendingEventOrdering } from 'matrix-js-sdk';
+import { PendingEventOrdering } from 'matrix-js-sdk';
 import { cryptoManager } from './crypto';
 import { pgPool } from '../db/client';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
-import { UserPayload } from '../types';
+import { SyncManagerOptions, UserPayload } from '../types';
 
 dotenv.config();
 
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient | null | undefined;
   private authConfig: UserPayload;
-  private syncToken: string | null = null;
+  private syncAccumulator: MatrixSDK.SyncAccumulator;
+  private latestSyncData: StoredSyncData | null = null;
+  private readonly options: Required<SyncManagerOptions>;
   private userId: string = "";
   private isInitialized = false;
 
-  constructor(authConfig: UserPayload) {
+  constructor(authConfig: UserPayload, options?: SyncManagerOptions) {
     super();
     this.authConfig = authConfig;
+    this.options = {
+      batchSize: options?.batchSize || 1000,
+      initialSyncLimit: options?.initialSyncLimit || 30,
+      timeoutMs: options?.timeoutMs || 30000,
+      maxTimelineEntries: options?.maxTimelineEntries || 50,
+    };
+    this.syncAccumulator = new MatrixSDK.SyncAccumulator({
+      maxTimelineEntries: this.options.maxTimelineEntries,
+    });
   }
 
   async initialize(): Promise<void> {
@@ -29,16 +41,20 @@ export class MatrixClient extends EventEmitter {
     try {
       this.client = MatrixSDK.createClient({
         baseUrl: this.authConfig.domain,
-        userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
+        userId: `@${this.authConfig.username}:${this.authConfig.domain}`
       });
 
       await this.login();
 
       await this.setupCrypto();
 
-      await this.loadSyncToken();
+      await this.loadLatestSyncData();
 
-      await this.startSync();
+      if(this.latestSyncData?.nextBatch) {
+        this.resumeSync(this.latestSyncData);
+      } else {
+        await this.startFreshSync();
+      }
 
       this.isInitialized = true;
       console.log("Matrix client fully initialized.");
@@ -111,15 +127,6 @@ export class MatrixClient extends EventEmitter {
 
     try {
       await this.client.logout();
-      this.syncToken = null;
-
-      const userId = this.client.getUserId();
-      if (userId) {
-        await pgPool.query(
-          'DELETE FROM auth_credentials WHERE user_id = $1',
-          [userId]
-        );
-      }
 
       this.client.stopClient();
       console.log('Successfully logged out');
@@ -174,7 +181,7 @@ export class MatrixClient extends EventEmitter {
     });
 
     this.client.on(MatrixSDK.Crypto.CryptoEvent.KeyBackupStatus, async (status) => {
-      await this.handleKeyBackupStatus(status);
+      await this.setKeyBackupStatus(status);
     });
   }
 
@@ -195,19 +202,19 @@ export class MatrixClient extends EventEmitter {
     }
   }
 
-  private async loadSyncToken() {
+  private async loadLatestSyncData() {
     const query = `
-      SELECT next_batch
+      SELECT *
       FROM sync_state
       ORDER BY created_at DESC
       LIMIT 1
     `;
 
     const result = await pgPool.query(query);
-    this.syncToken = result.rows[0]?.next_batch || null;
+    this.latestSyncData = result.rows[0] || null;
   }
 
-  private async startSync() {
+  private async startFreshSync() {
     if (!this.client) {
       throw new Error("Client not created");
     }
@@ -225,14 +232,11 @@ export class MatrixClient extends EventEmitter {
 
     this.client.on(MatrixSDK.ClientEvent.Sync, async (state, _, data) => {
       if (state === 'PREPARED' || state === 'SYNCING') {
-        await this.saveSyncToken();
+        await this.updateSyncState(state, data ?? {});
       }
-      await this.updateSyncStatus(state, data);
     });
 
-    this.client.on(MatrixSDK.RoomEvent.Timeline, async (event) => {
-      await this.processEvent(event);
-    });
+    this.setupEventListeners();
 
     await this.client.startClient({
       filter: filterDef,
@@ -241,99 +245,144 @@ export class MatrixClient extends EventEmitter {
     });
   }
 
-  private async saveSyncToken() {
-    if (this.syncToken) {
-      const query = `
-        INSERT INTO sync_state (next_batch, created_at)
-        VALUES ($1, $2)
-      `;
+  private async resumeSync(storedSync: StoredSyncData) {
+    try {
 
-      await pgPool.query(query, [
-        this.syncToken,
-        new Date().toISOString()
-      ]);
+      const syncResponse = {
+        "next_batch": storedSync.syncData.nextBatch,
+        "account_data": storedSync.syncData.accountData,
+        "rooms": storedSync.syncData.roomsData
+      };
+      // load the stored sync data into the accumulator
+      this.syncAccumulator.accumulate(syncResponse as any, true);
+
+      // setup event listeners
+      this.setupEventListeners();
+
+      // start syncing
+      await this.client?.startClient();
+
+    } catch (error) {
+      console.error('Failed to resume sync:', error);
+      // If resume fails, fall back to fresh sync
+      await this.startFreshSync();
     }
   }
 
-  // private async processRoom(room: Room) {
-  //     const timeline = room.getLiveTimeline();
-  //     const state = timeline.getState(MatrixSDK.EventTimeline.FORWARDS);
+  private async updateSyncState(state: string, data: MatrixSDK.SyncStateData) {
+    const query = `
+      INSERT INTO sync_state (
+        next_batch,
+        state,
+        sync_data,
+        created_at
+      ) VALUES ($1, $2, $3, $4)
+    `;
 
-  //     const roomData = {
-  //         id: room.roomId,
-  //         name: room.name,
-  //         topic: state?.getStateEvents('m.room.topic')?.[0]?.getContent().topic,
-  //         encrypted: state!.getStateEvents('m.room.encryption')?.length > 0,
-  //         members: Array.from(room.getJoinedMembers().map((m) => m.userId)),
-  //         created_at: new Date().toISOString(),
-  //         last_updated: new Date().toISOString(),
-  //     };
+    await pgPool.query(query, [
+      state,
+      data.nextSyncToken,
+      data,
+      new Date().toISOString()
+    ]);
+  }
 
-  //     await pgPool.from('rooms').upsert(roomData, { onConflict: 'id' });
-  // }
+  private async setupEventListeners(): Promise<void> {
+    if(!this.client) {
+      console.log("Client not initialized");
+      return;
+    }
 
-  private async processEvent(event: MatrixEvent) {
-    if (event.getType() !== 'm.room.message') return;
-
-    try {
-      let content = event.getContent();
-
-      if (event.isEncrypted()) {
-        const decryptedEvent = await cryptoManager.decryptEvent(event);
-        content = decryptedEvent.getContent();
+    this.client.on(MatrixSDK.RoomEvent.Timeline, async  (event, room, toStartOfTimeline) => {
+      if (toStartOfTimeline) {
+        return; // don't retrieve paginated results
       }
 
-      const query = `
-        INSERT INTO messages (
-          id, room_id, sender, content, msgtype,
-          timestamp, encrypted, edited, deleted, created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT (id) DO UPDATE SET
-          content = EXCLUDED.content,
-          edited = EXCLUDED.edited,
-          deleted = EXCLUDED.deleted
-      `;
+      if (event.getType() === "m.room.message") {
+        await this.persistMessage(room?.roomId, event);
+      }
+      else if(event.getType() === "m.") {
 
-      await pgPool.query(query, [
-        event.getId(),
-        event.getRoomId(),
-        event.getSender(),
-        content.body,
-        content.msgtype,
-        event.getDate()?.toISOString(),
-        event.isEncrypted(),
-        false,
-        false,
-        new Date().toISOString()
-      ]);
-    } catch (error: any) {
-      console.error(`Failed to process event ${event.getId()}:`, error);
-      await pgPool.query(
-        `INSERT INTO failed_events (event_id, room_id, error, retry_count, created_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          event.getId(),
-          event.getRoomId(),
-          error.message,
-          0,
-          new Date().toISOString()
-        ]
-      );
+      }
+    });
+
+  }
+
+  private async persistMessage(roomId: string | undefined, event: MatrixSDK.MatrixEvent): Promise<void> {
+    try {
+    const query = `
+      INSERT INTO messages (event_id, room_id, sender, content, event_type, timestamp, is_encrypted, relates_to, error)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (event_id) DO UPDATE SET
+        room_id = EXCLUDED.room_id,
+        sender = EXCLUDED.sender,
+        content = EXCLUDED.content,
+        event_type = EXCLUDED.type,
+        timestamp = EXCLUDED.timestamp,
+        is_encrypted = EXCLUDED.is_encrypted,
+        relates_to,
+        error
+    `;
+
+    const values = [
+      event.getId(),
+      roomId,
+      event.sender,
+      JSON.stringify(event.getContent()),
+      event.getType(),
+      event.getTs(),
+      event.isEncrypted(),
+      JSON.stringify(event.getRelation()),
+      event.error
+    ];
+
+    await pgPool.query(query, values);
+    } catch (error) {
+      console.error("Error persisting message:", error);
+      throw error;
     }
   }
 
-  // private async handleDeviceVerification(userId: string, deviceId: string) {
-  //     const device = await this.client.getDevice(deviceId) as IMyDevice;
-  //     await pgPool.from('device_verifications').insert({
-  //         user_id: userId,
-  //         device_id: deviceId,
-  //         display_name: device.display_name,
-  //         updated_at: new Date().toISOString(),
-  //     });
-  // }
+  private async persistParticipants(roomId: string, members: MatrixSDK.RoomMember): Promise<void> {
+    const participantsData = Object.values(members).map((member: any) => ({
+      room_id: roomId,
+      user_id: member.userId,
+      display_name: member.name,
+      avatar_url: member.avatarUrl,
+      membership: member.membership,
+    }));
 
-  private async handleKeyBackupStatus(status: boolean) {
+    try {
+      await pgPool.query(
+        `INSERT INTO participants (room_id, user_id, display_name, avatar_url, membership) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id, user_id) DO UPDATE SET display_name = EXCLUDED.display_name, avatar_url = EXCLUDED.avatar_url, membership = EXCLUDED.membership`,
+        participantsData.map((participant) => [
+          participant.room_id,
+          participant.user_id,
+          participant.display_name,
+          participant.avatar_url,
+          participant.membership,
+        ])
+      );
+    } catch (error) {
+      console.error('Error persisting participants:', error);
+      throw error;
+    }
+  }
+
+  private async persistRoom(room: MatrixSDK.Room): Promise<void> {
+    try {
+      await pgPool.query(
+        `INSERT INTO rooms (room_id, name, topic, is_encrypted, created_ts) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (room_id) DO UPDATE SET name = EXCLUDED.name, topic = EXCLUDED.topic, is_encrypted = EXCLUDED.is_encrypted, created_ts = EXCLUDED.created_ts`,
+        [room.roomId, room.name, room.topic, room.encrypted, room.getCreationTs()]
+      );
+    } catch (error) {
+      console.error('Error persisting room:', error);
+      throw error;
+    }
+  }
+
+
+  private async setKeyBackupStatus(status: boolean) {
     const query = `
       INSERT INTO key_backup_status (
         status,
@@ -343,22 +392,6 @@ export class MatrixClient extends EventEmitter {
 
     await pgPool.query(query, [
       status,
-      new Date().toISOString()
-    ]);
-  }
-
-  private async updateSyncStatus(state: string, data: any) {
-    const query = `
-      INSERT INTO sync_state (
-        state,
-        next_batch,
-        created_at
-      ) VALUES ($1, $2, $3)
-    `;
-
-    await pgPool.query(query, [
-      state,
-      data?.nextBatch,
       new Date().toISOString()
     ]);
   }

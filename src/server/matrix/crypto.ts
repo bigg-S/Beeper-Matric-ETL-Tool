@@ -1,5 +1,5 @@
 import * as MatrixSDK from 'matrix-js-sdk';
-import { OlmMachine, UserId, DeviceId, RoomId } from '@matrix-org/matrix-sdk-crypto-nodejs';
+import { OlmMachine, UserId, DeviceId, RoomId, DecryptedRoomEvent } from '@matrix-org/matrix-sdk-crypto-nodejs';
 import * as fs from 'fs';
 import {
   CryptoStatus,
@@ -508,7 +508,7 @@ export class CryptoManager {
     }
   }
 
-  async decryptEvent(event: MatrixSDK.MatrixEvent): Promise<any> {
+  async decryptEvent(event: MatrixSDK.MatrixEvent): Promise<DecryptedRoomEvent> {
     if (!this.crypto) {
       throw new Error('Crypto is not initialized');
     }

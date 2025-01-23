@@ -145,3 +145,8 @@ export interface SyncManagerOptions {
     initialSyncLimit?: number;
     timeoutMs?: number;
 }
+
+export interface StoredSyncData {
+    nextBatch: string;
+    syncData: sdk.ISyncData;
+}

@@ -132,6 +132,8 @@ export class SyncManager {
   private async initialSetup(): Promise<void> {
     const rooms = this.client.getRooms();
 
+    this.client.on(MatrixSDK.RoomEvent.Timeline)
+
     // Process rooms in batches
     const batchSize = 10;
     for (let i = 0; i < rooms.length; i += batchSize) {
