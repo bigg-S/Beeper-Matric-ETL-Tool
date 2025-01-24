@@ -153,15 +153,6 @@ export class CryptoManager {
         getSecretStorageKey: this.getSecretStorageKey.bind(this),
       };
 
-
-      this.client.getCrypto()?.bootstrapSecretStorage({
-        // This function will be called if a new secret storage key (aka recovery key) is needed.
-        // You should prompt the user to save the key somewhere, because they will need it to unlock secret storage in future.
-        createSecretStorageKey: async () => {
-            return this.getSecretStorageKey;
-        },
-      });
-
       if (passphrase) {
         const encoder = new TextEncoder();
         this.backupKey = encoder.encode(passphrase);

@@ -103,7 +103,7 @@ export class CryptoError extends Error {
 
 // Sync:
 export interface SyncStatus {
-    state: 'initializing' | 'syncing' | 'error' | 'stopped';
+    state: 'initializing' | 'syncing' | 'error' | 'synced' | 'stopped';
     lastSync?: Date;
     error?: string;
 }
