@@ -1,28 +1,21 @@
 import React, { useState } from 'react';
-import {
-  Card,
-  CardHeader,
-  CardBody,
-  Input,
-  Button,
-  Progress,
-} from '@nextui-org/react';
-import { LoginCredentials } from '../types';
+import { Card, CardHeader, CardBody, Input, Button, Progress } from '@nextui-org/react';
+import { AuthCredentials } from '../types';
 import APIClient from '../lib/api';
 
 const AuthForm = () => {
   const [formState, setFormState] = useState<{
-    credentials: LoginCredentials;
+    credentials: AuthCredentials;
     status: 'idle' | 'authenticating' | 'loading-keys' | 'syncing' | 'error' | 'success';
     error: string | null;
   }>({
     credentials: {
       username: '',
       password: '',
-      domain: 'matrix.beeper.com'
+      domain: 'matrix.beeper.com',
     },
     status: 'idle',
-    error: null
+    error: null,
   });
 
   const validateForm = () => {
@@ -43,26 +36,26 @@ const AuthForm = () => {
     e.preventDefault();
     const validationError = validateForm();
     if (validationError) {
-      setFormState(prev => ({ ...prev, error: validationError }));
+      setFormState((prev) => ({ ...prev, error: validationError }));
       return;
     }
 
     try {
-      setFormState(prev => ({ ...prev, status: 'authenticating', error: null }));
+      setFormState((prev) => ({ ...prev, status: 'authenticating', error: null }));
 
-      const loginResponse = await APIClient.login({
+      const authResponse = await APIClient.login({
         username: formState.credentials.username,
         password: formState.credentials.password,
-        domain: `https://${formState.credentials.domain}`
+        domain: `https://${formState.credentials.domain}`,
       });
 
-      console.log(loginResponse);
+      console.log(authResponse);
 
-      if (!loginResponse.success) {
+      if (!authResponse.success) {
         throw new Error('Authentication failed');
       }
 
-      setFormState(prev => ({ ...prev, status: 'loading-keys' }));
+      setFormState((prev) => ({ ...prev, status: 'loading-keys' }));
 
       // Poll for crypto initialization status
       // const checkCryptoStatus = async () => {
@@ -87,12 +80,11 @@ const AuthForm = () => {
       // };
 
       // checkCryptoStatus();
-
     } catch (error) {
-      setFormState(prev => ({
+      setFormState((prev) => ({
         ...prev,
         status: 'error',
-        error: error instanceof Error ? error.message : 'Authentication failed'
+        error: error instanceof Error ? error.message : 'Authentication failed',
       }));
     }
   };
@@ -124,10 +116,12 @@ const AuthForm = () => {
             label="Matrix Client Username"
             placeholder="Enter your Matrix Client Username"
             value={formState.credentials.username}
-            onChange={(e) => setFormState(prev => ({
-              ...prev,
-              credentials: { ...prev.credentials, username: e.target.value }
-            }))}
+            onChange={(e) =>
+              setFormState((prev) => ({
+                ...prev,
+                credentials: { ...prev.credentials, username: e.target.value },
+              }))
+            }
             isRequired
             isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
           />
@@ -136,10 +130,12 @@ const AuthForm = () => {
             type="password"
             placeholder="Enter your password"
             value={formState.credentials.password}
-            onChange={(e) => setFormState(prev => ({
-              ...prev,
-              credentials: { ...prev.credentials, password: e.target.value }
-            }))}
+            onChange={(e) =>
+              setFormState((prev) => ({
+                ...prev,
+                credentials: { ...prev.credentials, password: e.target.value },
+              }))
+            }
             isRequired
             isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
           />
@@ -147,31 +143,24 @@ const AuthForm = () => {
             label="Matrix Client Domain"
             placeholder="beeper.com"
             value={formState.credentials.domain}
-            onChange={(e) => setFormState(prev => ({
-              ...prev,
-              credentials: { ...prev.credentials, domain: e.target.value }
-            }))}
+            onChange={(e) =>
+              setFormState((prev) => ({
+                ...prev,
+                credentials: { ...prev.credentials, domain: e.target.value },
+              }))
+            }
             isRequired
             isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
           />
 
           {formState.error && (
-            <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">
-              {formState.error}
-            </div>
+            <div className="text-danger text-sm p-2 bg-danger-50 rounded-lg">{formState.error}</div>
           )}
 
           {formState.status !== 'idle' && formState.status !== 'error' && (
             <div className="flex flex-col gap-2">
-              <Progress
-                size="sm"
-                isIndeterminate
-                aria-label="Loading..."
-                className="max-w-md"
-              />
-              <p className="text-small text-default-500 text-center">
-                {getStatusMessage()}
-              </p>
+              <Progress size="sm" isIndeterminate aria-label="Loading..." className="max-w-md" />
+              <p className="text-small text-default-500 text-center">{getStatusMessage()}</p>
             </div>
           )}
 
@@ -181,7 +170,9 @@ const AuthForm = () => {
             isDisabled={formState.status !== 'idle' && formState.status !== 'error'}
             isLoading={formState.status !== 'idle' && formState.status !== 'error'}
           >
-            {formState.status === 'idle' || formState.status === 'error' ? 'Connect' : 'Connecting...'}
+            {formState.status === 'idle' || formState.status === 'error'
+              ? 'Connect'
+              : 'Connecting...'}
           </Button>
         </form>
       </CardBody>

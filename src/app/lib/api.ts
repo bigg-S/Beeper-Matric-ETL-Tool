@@ -1,5 +1,5 @@
-import { LoginResponse } from './../types/index';
-import { MatrixConfig } from "../types";
+import { AuthResponse } from './../types/index';
+import { MatrixConfig } from '../types';
 
 const API_BASE = process.env.API_URL || 'http://localhost:3001';
 
@@ -24,11 +24,11 @@ class APIClient {
     return response.json();
   }
 
-  static async login(config: MatrixConfig): Promise<LoginResponse> {
-    const response =  await this.request('/api/auth/login', {
+  static async login(config: MatrixConfig): Promise<AuthResponse> {
+    const response = (await this.request('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify(config),
-    }) as LoginResponse;
+    })) as AuthResponse;
 
     return response;
   }
@@ -44,7 +44,6 @@ class APIClient {
       method: 'GET',
     });
   }
-
 }
 
 export default APIClient;

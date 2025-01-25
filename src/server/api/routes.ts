@@ -1,15 +1,11 @@
 import { Router } from 'express';
 import { MatrixClient } from '../matrix/client';
-import { cryptoManager } from '../matrix/crypto';
-import { SyncManager } from '../matrix/sync';
 import { pgPool } from '../db/client';
 import { z } from 'zod';
 import { authenticateRequest } from '../middlware/auth';
-import { KeyExportOptionsCustom } from '@/server/types';
 
 const router = Router();
 let matrixClient: MatrixClient | null = null;
-let syncManager: SyncManager | null = null;
 
 const handleError = (res: any, error: any, status = 500) => {
   console.error(error);
@@ -27,10 +23,8 @@ router.post('/auth/login', async (req, res) => {
   try {
     const { username, password, domain } = loginSchema.parse(req.body);
     matrixClient = new MatrixClient({ username, password, domain });
-    await matrixClient.initialize();
-    // syncManager = new SyncManager(matrixClient.getClient());
-    // await syncManager.startSync();
-    res.json({ success: true });
+    const token = await matrixClient.initialize();
+    res.json({ success: true, token: token });
   } catch (error: any) {
     console.error('Login error:', error);
     res.status(500).json({ error: error.message });
@@ -39,11 +33,11 @@ router.post('/auth/login', async (req, res) => {
 
 router.post('/auth/logout', authenticateRequest, async (_req, res) => {
   try {
-    if (syncManager) await syncManager.stopSync();
-    if (matrixClient) await matrixClient.logout();
-    matrixClient = null;
-    syncManager = null;
-    res.json({ success: true });
+    if(matrixClient) {
+      matrixClient.logout();
+      res.json({ success: true });
+    }
+    res.json({ success: false });
   } catch (error: any) {
     handleError(res, error);
   }
@@ -53,7 +47,7 @@ router.get('/auth/me', authenticateRequest, async (_req, res) => {
   try {
     if (!matrixClient) throw new Error('Matrix client is not initialized.');
 
-    const userId = matrixClient.getClient().getUserId();
+    const userId = matrixClient.getClient()?.getUserId();
     if (!userId) throw new Error('User ID not found.');
 
     const userData = await matrixClient.getUserProfile(userId);
@@ -66,17 +60,16 @@ router.get('/auth/me', authenticateRequest, async (_req, res) => {
 
 // Sync Routes
 router.get('/sync/status', authenticateRequest, async (_req, res) => {
-  if (!syncManager) {
+  if (!matrixClient) {
     res.status(400).json({ error: 'Sync not initialized' });
     return;
   }
-  res.json(syncManager.getSyncStatus());
+  res.json(matrixClient.getClient()?.getSyncStateData());
 });
 
 router.post('/sync/start', authenticateRequest, async (_req, res) => {
   try {
-    if (!syncManager) throw new Error('Sync manager not initialized');
-    await syncManager.startSync();
+    if (!matrixClient) throw new Error('Sync manager not initialized');
     res.json({ success: true });
   } catch (error: any) {
     handleError(res, error);
@@ -85,8 +78,8 @@ router.post('/sync/start', authenticateRequest, async (_req, res) => {
 
 router.post('/sync/stop', authenticateRequest, async (_req, res) => {
   try {
-    if (!syncManager) throw new Error('Sync manager not initialized');
-    await syncManager.stopSync();
+    if (!matrixClient) throw new Error('Sync manager not initialized');
+    await matrixClient.logout();
     res.json({ success: true });
   } catch (error: any) {
     handleError(res, error);
@@ -212,53 +205,10 @@ export const exportKeysSchema = z
   })
   .strict();
 
-router.post('/crypto/export', authenticateRequest, async (req, res) => {
-  try {
-    const keyExportOpts: KeyExportOptionsCustom = exportKeysSchema.parse(req.body);
-    const keys = await cryptoManager.exportKeys(keyExportOpts);
-    res.json({ keys });
-  } catch (error: any) {
-    handleError(res, error);
-  }
-});
-
-router.post('/crypto/import', authenticateRequest, async (req, res) => {
-  try {
-    if (!req.body.keys) {
-      res.status(400).json({ error: 'Keys are required' });
-      return;
-    }
-    await cryptoManager.importKeys(req.body.keys);
-    res.json({ success: true });
-  } catch (error: any) {
-    handleError(res, error);
-  }
-});
-
 router.get('/crypto/status', authenticateRequest, async (_req, res) => {
   try {
-    const status = await cryptoManager.getStatus();
+    const status = await matrixClient?.getCryptoStatus();
     res.json(status);
-  } catch (error: any) {
-    handleError(res, error);
-  }
-});
-
-router.post('/crypto/backup', authenticateRequest, async (req, res) => {
-  try {
-    const { passphrase } = req.params;
-    await cryptoManager.createBackup(passphrase ?? '');
-    res.json({ success: true });
-  } catch (error: any) {
-    handleError(res, error);
-  }
-});
-
-router.post('/crypto/restore', authenticateRequest, async (req, res) => {
-  try {
-    const { passphrase } = req.params;
-    await cryptoManager.recoverKeys(passphrase ?? '');
-    res.json({ success: true });
   } catch (error: any) {
     handleError(res, error);
   }

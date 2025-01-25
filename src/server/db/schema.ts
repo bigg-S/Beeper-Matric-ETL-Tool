@@ -1,3 +1,5 @@
+// TODO: remove unnecessary relations
+
 export const schema = {
     auth_credentials: `
         CREATE TABLE IF NOT EXISTS auth_credentials (
