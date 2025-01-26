@@ -9,14 +9,14 @@ export function SyncStatus() {
 
     useEffect(() => {
         if (!auth.isAuthenticated || !auth.token) {
-        return;
+            return;
         }
 
         let ws: WebSocket
         let reconnectTimeout: NodeJS.Timeout
 
         const connectWebSocket = () => {
-        // Include token in WebSocket URL for authentication
+        // include token in WebSocket URL for authentication
         ws = new WebSocket(`ws://localhost:3000/api/sync?token=${auth.token}`)
 
         ws.onopen = () => {
@@ -33,15 +33,15 @@ export function SyncStatus() {
                 error: data.error,
             })
             } catch (error) {
-            console.error('Failed to parse WebSocket message:', error)
+                console.error('Failed to parse WebSocket message:', error)
             }
         }
 
         ws.onclose = (event) => {
             console.log('WebSocket disconnected:', event.code, event.reason)
-            // Only attempt to reconnect if we're still authenticated
+            // only attempt to reconnect if we're still authenticated
             if (auth.isAuthenticated) {
-            reconnectTimeout = setTimeout(connectWebSocket, 5000)
+                reconnectTimeout = setTimeout(connectWebSocket, 5000)
             }
         }
 
@@ -53,12 +53,12 @@ export function SyncStatus() {
         connectWebSocket()
 
         return () => {
-        if (ws) {
-            ws.close()
-        }
-        if (reconnectTimeout) {
-            clearTimeout(reconnectTimeout)
-        }
+            if (ws) {
+                ws.close()
+            }
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout)
+            }
         }
     }, [auth.isAuthenticated, auth.token, setSyncState])
 
@@ -80,9 +80,9 @@ export function SyncStatus() {
 
         try {
         const response = await fetch('/api/sync/retry', {
-            method: 'POST',
-            headers: {
-            'Authorization': `Bearer ${auth.token}`
+                method: 'POST',
+                headers: {
+                'Authorization': `Bearer ${auth.token}`
             }
         })
 
@@ -90,7 +90,7 @@ export function SyncStatus() {
             throw new Error('Failed to retry sync')
         }
         } catch (error) {
-        console.error('Failed to retry sync:', error)
+            console.error('Failed to retry sync:', error)
         }
     }
 

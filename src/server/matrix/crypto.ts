@@ -66,6 +66,8 @@ export class CryptoManager {
     setupSecretStorage?: boolean;
     authConfig?: UserPayload;
   }): Promise<CryptoSetupStatus> {
+    await this.client.initRustCrypto();
+
     const crypto = this.client.getCrypto();
     if (!crypto) {
       throw new Error('Crypto not initialized');

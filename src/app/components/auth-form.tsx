@@ -2,8 +2,11 @@ import React, { useState } from 'react';
 import { Card, CardHeader, CardBody, Input, Button, Progress } from '@nextui-org/react';
 import { AuthCredentials } from '../types';
 import APIClient from '../lib/api';
+import { toast } from 'react-toastify';
+import { useApp } from '../providers';
 
 const AuthForm = () => {
+  const { setAuth } = useApp();
   const [formState, setFormState] = useState<{
     credentials: AuthCredentials;
     status: 'idle' | 'authenticating' | 'loading-keys' | 'syncing' | 'error' | 'success';
@@ -36,12 +39,16 @@ const AuthForm = () => {
     e.preventDefault();
     const validationError = validateForm();
     if (validationError) {
-      setFormState((prev) => ({ ...prev, error: validationError }));
+      toast.error(validationError);
       return;
     }
 
     try {
-      setFormState((prev) => ({ ...prev, status: 'authenticating', error: null }));
+      setFormState(prev => ({
+        ...prev,
+        status: 'authenticating',
+        error: null
+      }));
 
       const authResponse = await APIClient.login({
         username: formState.credentials.username,
@@ -49,58 +56,25 @@ const AuthForm = () => {
         domain: `https://${formState.credentials.domain}`,
       });
 
-      console.log(authResponse);
-
       if (!authResponse.success) {
-        throw new Error('Authentication failed');
+        throw new Error(authResponse.error || 'Authentication failed');
       }
 
-      setFormState((prev) => ({ ...prev, status: 'loading-keys' }));
-
-      // Poll for crypto initialization status
-      // const checkCryptoStatus = async () => {
-      //   try {
-      //     const status = APIClient.getCryptoStatus();
-      //     if (status.) {
-      //       setFormState(prev => ({ ...prev, status: 'syncing' }));
-      //       const userData = await APIClient.get_user();
-      //       if (userData.success) {
-      //         setFormState(prev => ({ ...prev, status: 'success' }));
-      //       }
-      //     } else {
-      //       setTimeout(checkCryptoStatus, 1000);
-      //     }
-      //   } catch (error) {
-      //     setFormState(prev => ({
-      //       ...prev,
-      //       status: 'error',
-      //       error: 'Failed to initialize E2E encryption'
-      //     }));
-      //   }
-      // };
-
-      // checkCryptoStatus();
+      setAuth({
+        isAuthenticated: true,
+        token: authResponse.token
+      });
     } catch (error) {
-      setFormState((prev) => ({
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred'
+      );
+      setFormState(prev => ({
         ...prev,
         status: 'error',
-        error: error instanceof Error ? error.message : 'Authentication failed',
+        error: error instanceof Error ? error.message : 'Authentication failed'
       }));
-    }
-  };
-
-  const getStatusMessage = () => {
-    switch (formState.status) {
-      case 'authenticating':
-        return 'Authenticating...';
-      case 'loading-keys':
-        return 'Loading E2E encryption keys...';
-      case 'syncing':
-        return 'Syncing with Matrix server...';
-      case 'success':
-        return 'Successfully connected!';
-      default:
-        return null;
     }
   };
 
@@ -160,7 +134,6 @@ const AuthForm = () => {
           {formState.status !== 'idle' && formState.status !== 'error' && (
             <div className="flex flex-col gap-2">
               <Progress size="sm" isIndeterminate aria-label="Loading..." className="max-w-md" />
-              <p className="text-small text-default-500 text-center">{getStatusMessage()}</p>
             </div>
           )}
 

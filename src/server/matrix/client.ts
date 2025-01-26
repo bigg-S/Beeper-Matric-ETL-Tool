@@ -2,12 +2,11 @@ import * as MatrixSDK from 'matrix-js-sdk';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
 import { UserPayload } from '../types';
-import { getExistingCredentials, persistMessage, setAuthCredentials, setKeyBackupStatus, updateSyncToken } from './utils/db.utils';
+import { getExistingCredentials, loadLatestSyncToken, persistMessage, persistParticipant, persistParticipants, persistRoom, setAuthCredentials, setKeyBackupStatus, updateSyncToken } from './utils/db.utils';
 import { CryptoManager } from './crypto';
 
 dotenv.config();
 
-// TODO: initial database update logic based on whther sync tokem exists in db or not
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient | null = null;
   private cryptoManager: CryptoManager | null = null;
@@ -43,9 +42,11 @@ export class MatrixClient extends EventEmitter {
       this.client = MatrixSDK.createClient({
         baseUrl: this.authConfig.domain,
         userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
-        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, 'matrix-crypto-store'),
+        deviceId: this.generateDeviceId(),
         verificationMethods: ['m.sas.v1'],
       });
+
+      this.client.deviceId = this.client.getDeviceId();
 
       if(!this.client.isLoggedIn()) {
         await this.login();
@@ -56,6 +57,7 @@ export class MatrixClient extends EventEmitter {
 
       if(!this.client.clientRunning) {
         await this.client.startClient({initialSyncLimit: 500, lazyLoadMembers: true})
+        await this.initialFetch();
       }
 
       const syncToken = await this.client.store.getSavedSyncToken();
@@ -200,16 +202,16 @@ export class MatrixClient extends EventEmitter {
       }
 
       if (event.getType() === "m.room.message") {
-        await persistMessage(room?.roomId, event); // handles message decryption internally if needed
+        await persistMessage(room?.roomId, event);
       }
     });
 
-    this.client.on(MatrixSDK.RoomEvent.Summary, async  (_summary: MatrixSDK.IRoomSummary) => {
-      // TODO: handle participants
+    this.client.on(MatrixSDK.RoomStateEvent.Members, async  (_event, _state, member: MatrixSDK.RoomMember) => {
+      await persistParticipant(member)
     });
 
-    this.client.on(MatrixSDK.RoomEvent.MyMembership, async  (_room: MatrixSDK.Room, _membership, _prevMembership) => {
-      // TODO: handle rooms
+    this.client.on(MatrixSDK.RoomEvent.MyMembership, async  (room: MatrixSDK.Room, membership, _prevMembership) => {
+      await persistRoom(room, membership)
     });
   }
 
@@ -231,14 +233,31 @@ export class MatrixClient extends EventEmitter {
     }
   }
 
+  public async initialFetch(): Promise<void> {
+    const latestToken = await loadLatestSyncToken();
+
+    if (!latestToken) {
+      for (const room of this.client!.getRooms()) {
+        await persistRoom(room, "");
+
+        await persistParticipants(room);
+      }
+    }
+  }
+
+  public generateDeviceId(): string {
+    return Array.from(
+      { length: 10 },
+      () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.charAt(Math.floor(Math.random() * 26))
+    ).join('');
+  }
+
   public async logout(): Promise<void> {
     if (!this.client) {
       throw new Error('Client not created');
     }
 
     try {
-      // TODO: a way to stop the crypto backend during logout
-
       const syncToken = await this.client.store.getSavedSyncToken();
 
       await this.client.logout();

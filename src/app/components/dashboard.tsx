@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Card, CardBody, Table, TableHeader, TableColumn, TableBody, TableRow, TableCell, Button } from '@nextui-org/react'
 import { useApp } from '../providers'
+import { toast } from 'react-toastify'
 
 type SyncStats = {
     totalRooms: number
@@ -36,6 +37,17 @@ export function Dashboard() {
         return () => clearInterval(interval)
     }, [])
 
+    const logout = async () => {
+        try {
+            await useApp().logout()
+
+            toast.success('Logged out successfully')
+        } catch (error) {
+            toast.error('Logout failed. Please try again.')
+            console.error('Logout error:', error)
+        }
+    }
+
     return (
         <div className="space-y-6">
         <div className="flex justify-between items-center">
@@ -48,8 +60,8 @@ export function Dashboard() {
             <Button
             color="danger"
             variant="light"
-            onClick={() => {
-                // Handle logout
+            onPress={() => {
+                logout();
             }}
             >
             Logout

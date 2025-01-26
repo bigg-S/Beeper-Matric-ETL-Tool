@@ -7,6 +7,7 @@ import {
   MatrixClient,
   MatrixEvent,
   Room,
+  RoomMember,
 } from 'matrix-js-sdk';
 
 export async function getExistingCredentials(userId: string) {
@@ -64,6 +65,92 @@ export async function persistMessage(
   }
 }
 
+export async function persistParticipant(member: RoomMember): Promise<void> {
+  const query = `
+    INSERT INTO participants (
+      user_id, display_name, avatar_url, membership,
+      room_id, joined_ts, last_updated
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7
+    )
+    ON CONFLICT (user_id, room_id) DO UPDATE SET
+      display_name = EXCLUDED.display_name,
+      avatar_url = EXCLUDED.avatar_url,
+      membership = EXCLUDED.membership,
+      last_updated = EXCLUDED.last_updated
+    WHERE
+      participants.display_name IS DISTINCT FROM EXCLUDED.display_name
+      OR participants.avatar_url IS DISTINCT FROM EXCLUDED.avatar_url
+      OR participants.membership IS DISTINCT FROM EXCLUDED.membership
+      OR participants.last_updated IS DISTINCT FROM EXCLUDED.last_updated
+  `;
+
+  const values = [
+    member.userId,
+    member.name,
+    member.getMxcAvatarUrl() ?? '',
+    member.membership,
+    member.roomId,
+    member.events.member?.getTs(),
+    new Date().toISOString(),
+  ];
+
+  try {
+    await pgPool.query(query, values);
+  } catch (error: any) {
+    throw new Error(`Failed to sync participant: ${error.message}`);
+  }
+}
+
+export async function persistRoom(room: Room, membership: string): Promise<void> {
+  const state = room.getLiveTimeline().getState(EventTimeline.FORWARDS);
+  const roomData = {
+    id: room.roomId,
+    name: room.name,
+    topic: state?.getStateEvents('m.room.topic')[0]?.getContent()?.topic ?? '',
+    is_encrypted: !!state?.getStateEvents(EventType.RoomEncryption, ''),
+    created_ts: state?.getStateEvents('m.room.create', '')?.getTs(),
+    avatar_url: state?.getStateEvents('m.room.avatar')[0]?.getContent()?.url ?? '',
+    last_updated: new Date().toISOString(),
+  };
+
+  const query = `
+    INSERT INTO rooms (
+      id, name, topic, membership, is_encrypted, created_ts,
+      avatar_url, last_updated
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      topic = EXCLUDED.topic,
+      membership = EXCLUDE.membership,
+      is_encrypted = EXCLUDED.is_encrypted,
+      avatar_url = EXCLUDED.avatar_url,
+      last_updated = EXCLUDED.last_updated
+    WHERE
+      rooms.name IS DISTINCT FROM EXCLUDED.name
+      OR rooms.topic IS DISTINCT FROM EXCLUDED.topic
+      OR rooms.is_encrypted IS DISTINCT FROM EXCLUDED.is_encrypted
+      OR rooms.avatar_url IS DISTINCT FROM EXCLUDED.avatar_url
+      OR rooms.last_updated IS DISTINCT FROM EXCLUDED.last_updated
+    `;
+
+  try {
+    await pgPool.query(query, [
+      roomData.id,
+      roomData.name,
+      roomData.topic,
+      membership,
+      roomData.is_encrypted,
+      roomData.created_ts,
+      roomData.avatar_url,
+      roomData.last_updated,
+    ]);
+  } catch (error: any) {
+    throw new Error(`Failed to sync room: ${error.message}`);
+  }
+}
+
 export async function persistParticipants(room: Room): Promise<void> {
   const members = room.getJoinedMembers();
   const batchSize = 100;
@@ -71,8 +158,8 @@ export async function persistParticipants(room: Room): Promise<void> {
   for (let i = 0; i < members.length; i += batchSize) {
     const batch = members.slice(i, i + batchSize);
 
-    const query = `
-        INSERT INTO participants (
+    const query =
+        `INSERT INTO participants (
             user_id, display_name, avatar_url, membership,
             room_id, joined_ts, last_updated
         )
@@ -93,7 +180,8 @@ export async function persistParticipants(room: Room): Promise<void> {
             OR participants.avatar_url IS DISTINCT FROM EXCLUDED.avatar_url
             OR participants.membership IS DISTINCT FROM EXCLUDED.membership
             OR participants.last_updated IS DISTINCT FROM EXCLUDED.last_updated
-        `;
+            `
+        ;
 
     const values = batch.flatMap((member) => [
       member.userId,
@@ -108,64 +196,18 @@ export async function persistParticipants(room: Room): Promise<void> {
     try {
       await pgPool.query(query, values);
     } catch (error: any) {
-      throw new Error(`Failed to sync participants batch: ${error.message}`);
+      throw new Error("Failed to sync participants batch: ${error.message}");
     }
-  }
-}
-
-export async function persistRoom(room: Room): Promise<void> {
-  const state = room.getLiveTimeline().getState(EventTimeline.FORWARDS);
-  const roomData = {
-    id: room.roomId,
-    name: room.name,
-    topic: state?.getStateEvents('m.room.topic')[0]?.getContent()?.topic ?? '',
-    is_encrypted: !!state?.getStateEvents(EventType.RoomEncryption, ''),
-    created_ts: state?.getStateEvents('m.room.create', '')?.getTs(),
-    avatar_url: state?.getStateEvents('m.room.avatar')[0]?.getContent()?.url ?? '',
-    last_updated: new Date().toISOString(),
-  };
-
-  const query = `
-        INSERT INTO rooms (
-            id, name, topic, is_encrypted, created_ts,
-            avatar_url, last_updated
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            topic = EXCLUDED.topic,
-            is_encrypted = EXCLUDED.is_encrypted,
-            avatar_url = EXCLUDED.avatar_url,
-            last_updated = EXCLUDED.last_updated
-        WHERE
-            rooms.name IS DISTINCT FROM EXCLUDED.name
-            OR rooms.topic IS DISTINCT FROM EXCLUDED.topic
-            OR rooms.is_encrypted IS DISTINCT FROM EXCLUDED.is_encrypted
-            OR rooms.avatar_url IS DISTINCT FROM EXCLUDED.avatar_url
-            OR rooms.last_updated IS DISTINCT FROM EXCLUDED.last_updated
-    `;
-
-  try {
-    await pgPool.query(query, [
-      roomData.id,
-      roomData.name,
-      roomData.topic,
-      roomData.is_encrypted,
-      roomData.created_ts,
-      roomData.avatar_url,
-      roomData.last_updated,
-    ]);
-  } catch (error: any) {
-    throw new Error(`Failed to sync room: ${error.message}`);
   }
 }
 
 export async function setKeyBackupStatus(status: boolean) {
   const query = `
-        INSERT INTO key_backup_status (
-            status,
-            created_at
-        ) VALUES ($1, $2)
-    `;
+    INSERT INTO key_backup_status (
+      status,
+      created_at
+    ) VALUES ($1, $2)
+  `;
 
   await pgPool.query(query, [status, new Date().toISOString()]);
 }
@@ -176,9 +218,9 @@ export async function setAuthCredentials(
   authConfig: UserPayload
 ) {
   const query = `
-        INSERT INTO auth_credentials (
-            user_id, device_id, access_token, refresh_token, domain, homeserver_url, expires_in_ms, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO auth_credentials (
+        user_id, device_id, access_token, refresh_token, domain, homeserver_url, expires_in_ms, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `;
 
   await pgPool.query(query, [
@@ -193,25 +235,23 @@ export async function setAuthCredentials(
   ]);
 }
 
-export async function loadLatestSyncToken() {
+export async function loadLatestSyncToken(): Promise<string | null> {
   const query = `
-      SELECT next_batch
-        FROM sync_state
-        ORDER BY created_at DESC
-        LIMIT 1
-    `;
-
+    SELECT next_batch
+    FROM sync_state
+    ORDER BY created_at DESC
+    LIMIT 1
+  `;
   const result = await pgPool.query(query);
-  return result.rows[0] || null;
+  return result.rows[0]?.next_batch || null;
 }
 
-export async function updateSyncToken(syncToken: string) {
+export async function updateSyncToken(syncToken: string): Promise<void> {
   const query = `
-        INSERT INTO sync_state (
-            next_batch,
-            created_at
-        ) VALUES ($1, $2)
-    `;
-
+    INSERT INTO sync_state (next_batch, created_at)
+    VALUES ($1, $2)
+    ON CONFLICT (next_batch) DO UPDATE
+    SET created_at = EXCLUDED.created_at
+  `;
   await pgPool.query(query, [syncToken, new Date().toISOString()]);
 }
