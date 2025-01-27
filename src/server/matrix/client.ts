@@ -4,8 +4,11 @@ import * as dotenv from 'dotenv';
 import { UserPayload } from '../types';
 import { getExistingCredentials, loadLatestSyncToken, persistMessage, persistParticipant, persistParticipants, persistRoom, setAuthCredentials, setKeyBackupStatus, updateSyncToken } from './utils/db.utils';
 import { CryptoManager } from './crypto';
+import { indexedDB } from 'fake-indexeddb';
 
 dotenv.config();
+
+(global).indexedDB = indexedDB;
 
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient | null = null;
@@ -43,10 +46,8 @@ export class MatrixClient extends EventEmitter {
         baseUrl: this.authConfig.domain,
         userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
         deviceId: this.generateDeviceId(),
-        verificationMethods: ['m.sas.v1'],
+        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, 'matrix-crypto-store'),
       });
-
-      this.client.deviceId = this.client.getDeviceId();
 
       if(!this.client.isLoggedIn()) {
         await this.login();
