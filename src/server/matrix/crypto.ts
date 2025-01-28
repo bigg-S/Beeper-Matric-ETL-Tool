@@ -1,4 +1,4 @@
-import { AuthDict, Device, MatrixClient } from 'matrix-js-sdk';
+import { AuthDict, AuthType, Device, MatrixClient } from 'matrix-js-sdk';
 import { UserPayload } from '../types';
 
 export interface CryptoSetupStatus {
@@ -66,6 +66,9 @@ export class CryptoManager {
     setupSecretStorage?: boolean;
     authConfig?: UserPayload;
   }): Promise<CryptoSetupStatus> {
+
+    this.client.getUserId()?.replace(/^(.+?):https:\/\/matrix\.(.+)$/, '$1:$2') || '';
+    
     await this.client.initRustCrypto();
 
     const crypto = this.client.getCrypto();
@@ -78,7 +81,14 @@ export class CryptoManager {
       if (opts?.setupCrossSigning) {
         await crypto.bootstrapCrossSigning({
           authUploadDeviceSigningKeys: async (makeRequest) => {
-            return makeRequest(opts.authConfig as AuthDict).then(() => {});
+            const { username, password } = opts.authConfig as UserPayload;
+            const authData: AuthDict = {
+              type: AuthType.Password,
+              identifier: { type: "m.id.user", username },
+              password,
+              session: "",
+            };
+            return makeRequest(authData).then(() => {});
           },
         });
       }

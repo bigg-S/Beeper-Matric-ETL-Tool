@@ -235,6 +235,37 @@ export async function setAuthCredentials(
   ]);
 }
 
+export async function updateDeviceId(
+  userId: string | undefined,
+  newDeviceId: string | null
+) {
+  if (!userId || !newDeviceId) {
+    console.log("Invalid user or device ID");
+    return;
+  }
+
+  const query = `
+    UPDATE auth_credentials
+    SET device_id = $1
+    WHERE user_id = $2
+  `;
+
+  try {
+    const result = await pgPool.query(query, [
+      newDeviceId,
+      userId
+    ]);
+
+    if (result.rowCount === 0) {
+      throw new Error(`No credentials found for user ID: ${userId}`);
+    }
+
+    return result.rowCount;
+  } catch (error: any) {
+    throw new Error(`Failed to update device ID: ${error.message}`);
+  }
+}
+
 export async function loadLatestSyncToken(): Promise<string | null> {
   const query = `
     SELECT next_batch

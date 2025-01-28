@@ -2,13 +2,13 @@ import * as MatrixSDK from 'matrix-js-sdk';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
 import { UserPayload } from '../types';
-import { getExistingCredentials, loadLatestSyncToken, persistMessage, persistParticipant, persistParticipants, persistRoom, setAuthCredentials, setKeyBackupStatus, updateSyncToken } from './utils/db.utils';
+import { getExistingCredentials, loadLatestSyncToken, persistMessage, persistParticipant, persistParticipants, persistRoom, setAuthCredentials, setKeyBackupStatus, updateDeviceId, updateSyncToken } from './utils/db.utils';
 import { CryptoManager } from './crypto';
 import { indexedDB } from 'fake-indexeddb';
 
 dotenv.config();
 
-(global).indexedDB = indexedDB;
+global.indexedDB = indexedDB;
 
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient | null = null;
@@ -45,8 +45,7 @@ export class MatrixClient extends EventEmitter {
       this.client = MatrixSDK.createClient({
         baseUrl: this.authConfig.domain,
         userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
-        deviceId: this.generateDeviceId(),
-        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, 'matrix-crypto-store'),
+        deviceId: this.generateDeviceId()
       });
 
       if(!this.client.isLoggedIn()) {
@@ -97,7 +96,9 @@ export class MatrixClient extends EventEmitter {
       });
 
       await setAuthCredentials(this.client, authResponse, this.authConfig);
-      console.log('User logged in and credentials saved.', this.client.getUserId());
+      console.log('User logged in and credentials saved.', this.client.deviceId);
+
+      updateDeviceId(this.userId, this.client.deviceId)
 
       this.accessToken = authResponse.access_token;
     } catch (error: any) {
