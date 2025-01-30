@@ -9,9 +9,7 @@ config();
 const app = express();
 
 const allowedOrigins = [
-    process.env.CLIENT_URL,
-    'http://localhost:3000',
-    'http://192.168.125.79:3000'
+    process.env.CLIENT_URL
 ];
 
 const corsOptions: cors.CorsOptions = {
@@ -44,7 +42,7 @@ app.use(cors(corsOptions));
 
 app.options('*', cors(corsOptions));
 
-app.use((req, res, next) => {
+app.use((_req, res, next) => {
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header(
         'Access-Control-Allow-Headers',

@@ -24,6 +24,14 @@ export class MatrixClient extends EventEmitter {
     this.authConfig = authConfig;
   }
 
+  private onUnexpectedStoreClose = async (): Promise<void> => {
+    if (!this.client) return;
+    this.client.stopClient(); // stop the client as the database has failed
+    this.client.store.destroy();
+
+    // TODO: reload
+  };
+
   async initialize(): Promise<{token: string}> {
     if(this.client !== null) {
       return {token: this.accessToken};
@@ -42,10 +50,13 @@ export class MatrixClient extends EventEmitter {
     this.isInitializing = true;
 
     try {
+      const dbName = `matrix-js-sdk:${this.authConfig.username}`;
+
       this.client = MatrixSDK.createClient({
         baseUrl: this.authConfig.domain,
         userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
-        deviceId: this.generateDeviceId()
+        deviceId: this.generateDeviceId(),
+        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, dbName)
       });
 
       if(!this.client.isLoggedIn()) {
@@ -95,6 +106,9 @@ export class MatrixClient extends EventEmitter {
         password: this.authConfig.password,
       });
 
+      this.client.setAccessToken(authResponse.access_token);
+      this.client.credentials = { userId: this.userId }
+
       await setAuthCredentials(this.client, authResponse, this.authConfig);
       console.log('User logged in and credentials saved.', this.client.deviceId);
 
@@ -118,7 +132,7 @@ export class MatrixClient extends EventEmitter {
     if (existingCredentials) {
       this.client.deviceId = existingCredentials.device_id;
       this.client.setAccessToken(existingCredentials.access_token);
-      this.client.credentials = { userId: this.client.getUserId() };
+      this.client.credentials = { userId: this.userId };
       return true;
     }
 
@@ -129,6 +143,27 @@ export class MatrixClient extends EventEmitter {
     if (!this.client) {
       throw new Error('Client not created');
     }
+
+    for (const dbType of ["indexeddb", "memory"]) {
+      try {
+        const promise = this.client.store.startup();
+        console.log("MatrixClientPeg: waiting for MatrixClient store to initialise");
+        await promise;
+        break;
+      } catch (err) {
+        if (dbType === "indexeddb") {
+          console.error("Error starting matrixclient store - falling back to memory store", err);
+          this.client.store = new MatrixSDK.MemoryStore({
+            localStorage: localStorage,
+          });
+        } else {
+          console.error("Failed to start memory store!", err);
+          throw err;
+        }
+      }
+    }
+    
+    this.client.store.on?.("closed", this.onUnexpectedStoreClose);
 
     this.cryptoManager = new CryptoManager(this.client);
 
@@ -198,6 +233,18 @@ export class MatrixClient extends EventEmitter {
       throw new Error('Client not created');
     }
 
+    this.client.on(MatrixSDK.RoomEvent.MyMembership, async (room, membership, _prevMembership) => {
+      if (membership === MatrixSDK.KnownMembership.Invite) {
+        try {
+          await this.client?.joinRoom(room.roomId);
+          console.log("Auto-joined %s", room.roomId);
+          await persistRoom(room, membership);
+        } catch (error) {
+          console.error("Error auto-joining room:", error);
+        }
+      }
+    });
+
     this.client.on(MatrixSDK.RoomEvent.Timeline, async  (event, room, toStartOfTimeline) => {
       if (toStartOfTimeline) {
         return; // don't retrieve paginated results
@@ -210,10 +257,6 @@ export class MatrixClient extends EventEmitter {
 
     this.client.on(MatrixSDK.RoomStateEvent.Members, async  (_event, _state, member: MatrixSDK.RoomMember) => {
       await persistParticipant(member)
-    });
-
-    this.client.on(MatrixSDK.RoomEvent.MyMembership, async  (room: MatrixSDK.Room, membership, _prevMembership) => {
-      await persistRoom(room, membership)
     });
   }
 

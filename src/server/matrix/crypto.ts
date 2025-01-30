@@ -68,7 +68,7 @@ export class CryptoManager {
   }): Promise<CryptoSetupStatus> {
 
     this.client.getUserId()?.replace(/^(.+?):https:\/\/matrix\.(.+)$/, '$1:$2') || '';
-    
+
     await this.client.initRustCrypto();
 
     const crypto = this.client.getCrypto();
