@@ -2,13 +2,28 @@ import * as MatrixSDK from 'matrix-js-sdk';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
 import { UserPayload } from '../types';
-import { getExistingCredentials, loadLatestSyncToken, persistMessage, persistParticipant, persistParticipants, persistRoom, setAuthCredentials, setKeyBackupStatus, updateDeviceId, updateSyncToken } from './utils/db.utils';
+import {
+  getExistingCredentials,
+  loadLatestSyncToken,
+  persistMessage,
+  persistParticipant,
+  persistParticipants,
+  persistRoom,
+  setAuthCredentials,
+  setKeyBackupStatus,
+  updateDeviceId,
+  updateSyncToken
+} from './utils/db.utils';
 import { CryptoManager } from './crypto';
 import { indexedDB } from 'fake-indexeddb';
+import Olm from '@matrix-org/olm';
+import { ISecretStorageKeyInfo } from 'matrix-js-sdk/lib/crypto/api';
 
 dotenv.config();
 
 global.indexedDB = indexedDB;
+global.Olm = Olm;
+
 
 export class MatrixClient extends EventEmitter {
   private client: MatrixSDK.MatrixClient | null = null;
@@ -16,6 +31,7 @@ export class MatrixClient extends EventEmitter {
   private authConfig: UserPayload;
   private userId: string = '';
   private accessToken: string = '';
+  private storageKey: Uint8Array | null = null;
   private isInitialized = false;
   private isInitializing = false;
 
@@ -28,8 +44,6 @@ export class MatrixClient extends EventEmitter {
     if (!this.client) return;
     this.client.stopClient(); // stop the client as the database has failed
     this.client.store.destroy();
-
-    // TODO: reload
   };
 
   async initialize(): Promise<{token: string}> {
@@ -56,7 +70,10 @@ export class MatrixClient extends EventEmitter {
         baseUrl: this.authConfig.domain,
         userId: `@${this.authConfig.username}:${this.authConfig.domain}`,
         deviceId: this.generateDeviceId(),
-        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, dbName)
+        cryptoStore: new MatrixSDK.IndexedDBCryptoStore(indexedDB, dbName),
+        cryptoCallbacks: {
+          getSecretStorageKey: this.getSecretStorageKey
+        }
       });
 
       if(!this.client.isLoggedIn()) {
@@ -67,7 +84,7 @@ export class MatrixClient extends EventEmitter {
       await this.setupEventListeners();
 
       if(!this.client.clientRunning) {
-        await this.client.startClient({initialSyncLimit: 500, lazyLoadMembers: true})
+        await this.client.startClient({initialSyncLimit: 50, lazyLoadMembers: true})
         await this.initialFetch();
       }
 
@@ -106,10 +123,12 @@ export class MatrixClient extends EventEmitter {
         password: this.authConfig.password,
       });
 
+      this.storageKey = await this.generateStorageKey();
+
       this.client.setAccessToken(authResponse.access_token);
       this.client.credentials = { userId: this.userId }
 
-      await setAuthCredentials(this.client, authResponse, this.authConfig);
+      await setAuthCredentials(this.client, this.storageKey, authResponse, this.authConfig);
       console.log('User logged in and credentials saved.', this.client.deviceId);
 
       updateDeviceId(this.userId, this.client.deviceId)
@@ -147,7 +166,7 @@ export class MatrixClient extends EventEmitter {
     for (const dbType of ["indexeddb", "memory"]) {
       try {
         const promise = this.client.store.startup();
-        console.log("MatrixClientPeg: waiting for MatrixClient store to initialise");
+        console.log("MatrixClient: waiting for MatrixClient store to initialise");
         await promise;
         break;
       } catch (err) {
@@ -162,7 +181,7 @@ export class MatrixClient extends EventEmitter {
         }
       }
     }
-    
+
     this.client.store.on?.("closed", this.onUnexpectedStoreClose);
 
     this.cryptoManager = new CryptoManager(this.client);
@@ -171,9 +190,10 @@ export class MatrixClient extends EventEmitter {
 
     // initialize crypto if not fully ready
     if (!cryptoStatus.crossSigningReady || !cryptoStatus.secretStorageReady) {
+      if(!this.storageKey) throw Error("Storage key is null");
       try {
         await this.cryptoManager.initializeCrypto({
-          password: this.authConfig.password,
+          storageKey: this.storageKey,
           setupCrossSigning: true,
           setupSecretStorage: true,
           authConfig: this.authConfig
@@ -321,6 +341,57 @@ export class MatrixClient extends EventEmitter {
       this.isInitialized = false;
     }
   }
+
+  async generateStorageKey(): Promise<Uint8Array> {
+    try {
+      const key = await crypto.subtle.generateKey(
+        {
+          name: "AES-GCM",
+          length: 256,
+        },
+        true,
+        ["encrypt", "decrypt"]
+      );
+
+      const rawKey = await crypto.subtle.exportKey("raw", key);
+      const keyArray = new Uint8Array(rawKey);
+
+      if (keyArray.length !== 32) {
+        throw new Error("Generated key is not 32 bytes long.");
+      }
+
+      return keyArray;
+    } catch (error) {
+      console.error("Error generating storage key:", error);
+      throw error;
+    }
+  }
+
+  private getSecretStorageKey = async ({
+    keys: keyInfos,
+  }: {
+    keys: Record<string, ISecretStorageKeyInfo>;
+  }): Promise<[string, Uint8Array] | null> => {
+    if (!this.storageKey) return null;
+
+    const keyId = await this.client?.secretStorage.getDefaultKeyId();
+    if (!keyId || !keyInfos[keyId]) return null;
+
+    const keyInfo = keyInfos[keyId];
+    if (!keyInfo.passphrase) return null;
+
+    const salt = Uint8Array.from(keyInfo.passphrase.salt);
+
+    const derivedKey = await this.cryptoManager?.deriveKey(
+      this.storageKey.toString(),
+      salt,
+      keyInfo.passphrase.iterations
+    );
+
+    if(derivedKey == null) throw new Error("derived Key is null");
+
+    return [keyId, derivedKey.rawKey];
+  };
 
   public getClient(): MatrixSDK.MatrixClient | null {
     return this.client;

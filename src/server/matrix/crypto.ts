@@ -10,11 +10,12 @@ export interface CryptoSetupStatus {
 
 export class CryptoManager {
   private client: MatrixClient;
+  static MIN_PASSWORD_LENGTH: number = 8;
+  static KEY_LENGTH: number = 32;
 
   constructor(client: MatrixClient) {
     this.client = client;
   }
-
 
   async isCryptoReady(): Promise<CryptoSetupStatus> {
     try {
@@ -36,10 +37,10 @@ export class CryptoManager {
         const deviceMap = ownDevices.get(userId)!; // the inner map
         // iterating over the deviceMap to find a verified device.
         for (const device of deviceMap.values()) {
-            if(this.isDeviceVerified(device)){
-                isVerified = true
-                break;
-            }
+          if(this.isDeviceVerified(device)){
+            isVerified = true
+            break;
+          }
         }
       }
 
@@ -61,15 +62,25 @@ export class CryptoManager {
   }
 
   async initializeCrypto(opts?: {
-    password?: string;
+    storageKey: Uint8Array;
     setupCrossSigning?: boolean;
     setupSecretStorage?: boolean;
     authConfig?: UserPayload;
   }): Promise<CryptoSetupStatus> {
 
-    this.client.getUserId()?.replace(/^(.+?):https:\/\/matrix\.(.+)$/, '$1:$2') || '';
+    if (!this.client) {
+      throw new Error("createClient must be called first");
+    }
 
-    await this.client.initRustCrypto();
+    const hasKeyBackup = (await this.client.getCrypto()?.checkKeyBackupAndEnable()) !== null;
+
+    if(!hasKeyBackup) {
+      await this.client.getCrypto()?.resetKeyBackup();
+    }
+
+    await this.client.initRustCrypto({
+      storageKey: opts?.storageKey
+    });
 
     const crypto = this.client.getCrypto();
     if (!crypto) {
@@ -98,9 +109,9 @@ export class CryptoManager {
         await crypto.bootstrapSecretStorage({
           // create new secret storage key (if needed)
           setupNewSecretStorage: true,
-          ...(opts.password ? {
+          ...(opts.authConfig?.password ? {
             createSecretStorageKey: async () => {
-              return crypto.createRecoveryKeyFromPassphrase(opts.password);
+              return crypto.createRecoveryKeyFromPassphrase(opts.authConfig?.password);
             }
           } : {})
         });
@@ -169,6 +180,51 @@ export class CryptoManager {
 
     if (keys.secretsBundle && crypto.importSecretsBundle) {
       await crypto.importSecretsBundle(keys.secretsBundle);
+    }
+  }
+
+  async deriveKey(
+    passphrase: string,
+    salt: Uint8Array,
+    iterations: number
+  ): Promise<{ key: CryptoKey; rawKey: Uint8Array }> {
+    if (passphrase.length < CryptoManager.MIN_PASSWORD_LENGTH) {
+      throw new Error(
+        `Password must be at least ${CryptoManager.MIN_PASSWORD_LENGTH} characters long`,
+      );
+    }
+
+    try {
+      const encoder = new TextEncoder();
+      const baseKey = await crypto.subtle.importKey(
+        'raw',
+        encoder.encode(passphrase),
+        'PBKDF2',
+        false,
+        ['deriveBits']
+      );
+
+      const derivedBits = await crypto.subtle.deriveBits(
+        {
+          name: 'PBKDF2',
+          salt,
+          iterations,
+          hash: 'SHA-512',
+        },
+        baseKey,
+        CryptoManager.KEY_LENGTH * 8
+      );
+
+      const key = await crypto.subtle.importKey('raw', derivedBits, 'AES-GCM', false, [
+        'encrypt',
+        'decrypt',
+      ]);
+
+      return { key, rawKey: new Uint8Array(derivedBits) };
+    } catch (error) {
+      throw new Error(
+        `Failed to generate encryption key: ${error instanceof Error ? error.message : 'Unknown error'}`
+      );
     }
   }
 }

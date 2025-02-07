@@ -214,13 +214,14 @@ export async function setKeyBackupStatus(status: boolean) {
 
 export async function setAuthCredentials(
   client: MatrixClient,
+  storageKey: Uint8Array,
   authResponse: LoginResponse,
   authConfig: UserPayload
 ) {
   const query = `
       INSERT INTO auth_credentials (
-        user_id, device_id, access_token, refresh_token, domain, homeserver_url, expires_in_ms, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        user_id, device_id, access_token, refresh_token, domain, homeserver_url, expires_in_ms, storage_key, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `;
 
   await pgPool.query(query, [
@@ -231,6 +232,7 @@ export async function setAuthCredentials(
     authConfig.domain,
     client.getUserId()?.split(':')[1],
     authResponse.expires_in_ms,
+    storageKey,
     new Date().toISOString(),
   ]);
 }

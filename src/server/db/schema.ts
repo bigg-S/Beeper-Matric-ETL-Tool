@@ -8,8 +8,10 @@ export const schema = {
             refresh_token TEXT,
             domain TEXT NOT NULL,
             homeserver_url TEXT NOT NULL,
+            storage_key BYTEA NOT NULL,
             expires_in_ms BIGINT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (access_token, refresh_token, device_id)
         );
     `,
 

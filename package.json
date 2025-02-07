@@ -80,6 +80,7 @@
   },
   "dependencies": {
     "@matrix-org/matrix-sdk-crypto-nodejs": "^0.3.0-beta.1",
+    "@matrix-org/olm": "^3.2.15",
     "@nextui-org/react": "^2.6.11",
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
