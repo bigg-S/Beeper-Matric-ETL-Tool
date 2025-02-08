@@ -1,3 +1,5 @@
+'use_client'
+
 import { Inter } from 'next/font/google'
 import '../../global.css'
 import { Providers } from './providers'

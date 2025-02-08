@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { MatrixClient } from '../matrix/client';
+import { MatrixClient } from '../../app/matrix/client';
 import { pgPool } from '../db/client';
 import { z } from 'zod';
 import { authenticateRequest } from '../middlware/auth';
@@ -33,7 +33,7 @@ router.post('/auth/login', async (req, res) => {
 
 router.post('/auth/logout', authenticateRequest, async (_req, res) => {
   try {
-    if(matrixClient) {
+    if (matrixClient) {
       matrixClient.logout();
       res.json({ success: true });
     }
@@ -89,9 +89,7 @@ router.post('/sync/stop', authenticateRequest, async (_req, res) => {
 // Data Routes
 router.get('/rooms', authenticateRequest, async (_req, res) => {
   try {
-    const result = await pgPool.query(
-      'SELECT * FROM rooms ORDER BY last_message_timestamp DESC'
-    );
+    const result = await pgPool.query('SELECT * FROM rooms ORDER BY last_message_timestamp DESC');
     res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
@@ -153,9 +151,7 @@ router.get('/rooms/:roomId/messages', authenticateRequest, async (req, res) => {
 
 router.get('/users', authenticateRequest, async (_req, res) => {
   try {
-    const result = await pgPool.query(
-      'SELECT * FROM users ORDER BY display_name'
-    );
+    const result = await pgPool.query('SELECT * FROM users ORDER BY display_name');
     res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);
@@ -230,7 +226,7 @@ router.get('/stats', authenticateRequest, async (_req, res) => {
     res.json({
       totalRooms: parseInt(stats.rows[0].total_rooms),
       totalMessages: parseInt(stats.rows[0].total_messages),
-      lastSync: stats.rows[0].last_sync
+      lastSync: stats.rows[0].last_sync,
     });
   } catch (error: any) {
     handleError(res, error);
@@ -240,10 +236,9 @@ router.get('/stats', authenticateRequest, async (_req, res) => {
 router.get('/logs', authenticateRequest, async (req, res) => {
   try {
     const { limit = 100 } = req.query;
-    const result = await pgPool.query(
-      'SELECT * FROM logs ORDER BY timestamp DESC LIMIT $1',
-      [Number(limit)]
-    );
+    const result = await pgPool.query('SELECT * FROM logs ORDER BY timestamp DESC LIMIT $1', [
+      Number(limit),
+    ]);
     res.json(result.rows);
   } catch (error: any) {
     handleError(res, error);

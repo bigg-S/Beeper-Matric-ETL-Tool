@@ -1,3 +1,4 @@
+'use_client'
 import { AuthResponse, UserProfile } from '../types';
 import { MatrixConfig } from '../types';
 

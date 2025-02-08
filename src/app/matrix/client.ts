@@ -1,7 +1,8 @@
+"use client";
 import * as MatrixSDK from 'matrix-js-sdk';
 import { EventEmitter } from 'events';
 import * as dotenv from 'dotenv';
-import { UserPayload } from '../types';
+import { UserPayload } from '../../server/types';
 import {
   getExistingCredentials,
   loadLatestSyncToken,
@@ -13,16 +14,18 @@ import {
   setKeyBackupStatus,
   updateDeviceId,
   updateSyncToken
-} from './utils/db.utils';
+} from '../../server/utils/db.utils';
 import { CryptoManager } from './crypto';
-import { indexedDB } from 'fake-indexeddb';
-import Olm from '@matrix-org/olm';
 import { ISecretStorageKeyInfo } from 'matrix-js-sdk/lib/crypto/api';
 
 dotenv.config();
 
-global.indexedDB = indexedDB;
-global.Olm = Olm;
+const localStorage = window.localStorage;
+
+let indexedDB: IDBFactory;
+try {
+    indexedDB = window.indexedDB;
+} catch {}
 
 
 export class MatrixClient extends EventEmitter {

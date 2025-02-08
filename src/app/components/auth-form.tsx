@@ -1,3 +1,4 @@
+'use_client'
 import React, { useState } from 'react';
 import { Card, CardHeader, CardBody, Input, Button, Progress } from '@nextui-org/react';
 import { AuthCredentials } from '../types';

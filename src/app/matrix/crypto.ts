@@ -1,5 +1,7 @@
+'use_client'
+
 import { AuthDict, AuthType, Device, MatrixClient } from 'matrix-js-sdk';
-import { UserPayload } from '../types';
+import { UserPayload } from '../../server/types';
 
 export interface CryptoSetupStatus {
   crossSigningReady: boolean;
@@ -19,17 +21,12 @@ export class CryptoManager {
 
   async isCryptoReady(): Promise<CryptoSetupStatus> {
     try {
-      const userId = this.client.getUserId() ?? "";
-      const [
-        crossSigningReady,
-        secretStorageReady,
-        keyBackupInfo,
-        ownDevices
-      ] = await Promise.all([
+      const userId = this.client.getUserId() ?? '';
+      const [crossSigningReady, secretStorageReady, keyBackupInfo, ownDevices] = await Promise.all([
         this.client.getCrypto()?.isCrossSigningReady(),
         this.client.getCrypto()?.isSecretStorageReady(),
         this.client.getCrypto()?.getKeyBackupInfo(),
-        this.client.getCrypto()?.getUserDeviceInfo([userId], true)
+        this.client.getCrypto()?.getUserDeviceInfo([userId], true),
       ]);
 
       let isVerified = false;
@@ -37,8 +34,8 @@ export class CryptoManager {
         const deviceMap = ownDevices.get(userId)!; // the inner map
         // iterating over the deviceMap to find a verified device.
         for (const device of deviceMap.values()) {
-          if(this.isDeviceVerified(device)){
-            isVerified = true
+          if (this.isDeviceVerified(device)) {
+            isVerified = true;
             break;
           }
         }
@@ -48,7 +45,7 @@ export class CryptoManager {
         crossSigningReady: !!crossSigningReady,
         secretStorageReady: !!secretStorageReady,
         keyBackupAvailable: !!keyBackupInfo,
-        deviceVerified: isVerified
+        deviceVerified: isVerified,
       };
     } catch (error) {
       console.error('Error checking crypto readiness:', error);
@@ -56,7 +53,7 @@ export class CryptoManager {
         crossSigningReady: false,
         secretStorageReady: false,
         keyBackupAvailable: false,
-        deviceVerified: false
+        deviceVerified: false,
       };
     }
   }
@@ -67,19 +64,18 @@ export class CryptoManager {
     setupSecretStorage?: boolean;
     authConfig?: UserPayload;
   }): Promise<CryptoSetupStatus> {
-
     if (!this.client) {
-      throw new Error("createClient must be called first");
+      throw new Error('createClient must be called first');
     }
 
     const hasKeyBackup = (await this.client.getCrypto()?.checkKeyBackupAndEnable()) !== null;
 
-    if(!hasKeyBackup) {
+    if (!hasKeyBackup) {
       await this.client.getCrypto()?.resetKeyBackup();
     }
 
     await this.client.initRustCrypto({
-      storageKey: opts?.storageKey
+      storageKey: opts?.storageKey,
     });
 
     const crypto = this.client.getCrypto();
@@ -95,9 +91,9 @@ export class CryptoManager {
             const { username, password } = opts.authConfig as UserPayload;
             const authData: AuthDict = {
               type: AuthType.Password,
-              identifier: { type: "m.id.user", username },
+              identifier: { type: 'm.id.user', username },
               password,
-              session: "",
+              session: '',
             };
             return makeRequest(authData).then(() => {});
           },
@@ -109,11 +105,13 @@ export class CryptoManager {
         await crypto.bootstrapSecretStorage({
           // create new secret storage key (if needed)
           setupNewSecretStorage: true,
-          ...(opts.authConfig?.password ? {
-            createSecretStorageKey: async () => {
-              return crypto.createRecoveryKeyFromPassphrase(opts.authConfig?.password);
-            }
-          } : {})
+          ...(opts.authConfig?.password
+            ? {
+                createSecretStorageKey: async () => {
+                  return crypto.createRecoveryKeyFromPassphrase(opts.authConfig?.password);
+                },
+              }
+            : {}),
         });
       }
 
@@ -137,7 +135,7 @@ export class CryptoManager {
       await crypto.requestOwnUserVerification();
 
       // cross-sign our own device
-      const ownDevices = await crypto.getUserDeviceInfo([this.client.getUserId() ?? ""]);
+      const ownDevices = await crypto.getUserDeviceInfo([this.client.getUserId() ?? '']);
       const currentDeviceId = this.client.getDeviceId();
 
       if (currentDeviceId && ownDevices) {
@@ -163,14 +161,11 @@ export class CryptoManager {
 
     return {
       roomKeys: await crypto.exportRoomKeysAsJson(),
-      secretsBundle: await crypto.exportSecretsBundle?.()
+      secretsBundle: await crypto.exportSecretsBundle?.(),
     };
   }
 
-  async importKeys(keys: {
-    roomKeys: string;
-    secretsBundle?: any;
-  }): Promise<void> {
+  async importKeys(keys: { roomKeys: string; secretsBundle?: any }): Promise<void> {
     const crypto = this.client.getCrypto();
     if (!crypto) {
       throw new Error('Crypto not initialized');
@@ -190,7 +185,7 @@ export class CryptoManager {
   ): Promise<{ key: CryptoKey; rawKey: Uint8Array }> {
     if (passphrase.length < CryptoManager.MIN_PASSWORD_LENGTH) {
       throw new Error(
-        `Password must be at least ${CryptoManager.MIN_PASSWORD_LENGTH} characters long`,
+        `Password must be at least ${CryptoManager.MIN_PASSWORD_LENGTH} characters long`
       );
     }
 
